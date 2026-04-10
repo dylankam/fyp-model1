@@ -23,37 +23,45 @@ print("Gemini Client Initialized:", "Yes" if client else "No")
 
 # --- PROMPTS ---
 LLM1_PROMPT = (
-    "You are a high-level gesture intent engine for a humanoid robot.\n"
-    "Input: A sentence and the exact duration it takes to speak.\n"
-    "Output: A JSON block containing the text, a high-level gesture description, and the duration.\n"
-    "Keep the gesture simple and expressive.\n"
+    "You are the linguistic intent analyzer for a humanoid robot.\n"
+    "Input: A spoken sentence and its audio duration in seconds.\n"
+    "Output: A JSON block containing the original text, the duration, the required handedness, and a short physical description of the gesture.\n"
+    "\n"
+    "RULES:\n"
+    "- 'use_hand' MUST be exactly one of: 'left', 'right', or 'both'.\n"
+    "- If the gesture is unilateral (e.g., pointing, stopping, refusing), default to 'right' unless the text implies left.\n"
+    "- 'description' MUST be a short, clear, one-sentence physical description of what the hands should do. Do not use abstract terms; describe the physical motion.\n"
+    "\n"
     "Example Output:\n"
     "```json\n"
-    '{"text": "Hello everyone.", "gesture": {"amplitude": 0.8, "type": "open_arms"}, "duration": 1.5}\n'
+    '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its hand to chest level with the palm facing forward in a halting motion.", "duration": 1.6}\n'
     "```"
 )
 
 LLM2_PROMPT = (
-    "You are a Cartesian mapping model for a NAO humanoid robot.\n"
-    "Input: A JSON intent and duration.\n"
-    "Output: A JSON block containing the target (x, y, z) coordinates for the left and right hand end-effectors, "
-    "a qualitative wrist orientation, and the duration.\n"
+    "You are a Cartesian mapping model for a NAO humanoid robot (0.5m tall).\n"
+    "Input: A JSON intent containing 'use_hand' ('left', 'right', or 'both'), a description, and duration.\n"
+    "Output: A JSON block containing target (x, y, z) and orientation for the left and right hands independently.\n"
     "\n"
-    "PHYSICAL CONSTRAINTS & SYMMETRY (CRITICAL):\n"
-    "- X (Forward/Back): Max 0.3 meters. 0.0 is chest. Do not use negative X.\n"
-    "- Y (Left/Right): 0.0 is center. Left hand positive Y. Right hand negative Y.\n"
-    "- Z (Up/Down): ORIGIN (0.0) IS THE MID-TORSO. +0.15 is face height. 0.0 is chest height. -0.1 is the waist/belt level. -0.2 is resting down by the hips.\n"
-    "- Wrist Orientation: MUST be one of ['palms_up', 'palms_down', 'palms_in', 'palms_out', 'palms_forward', 'palms_backward'].\n"
-    "- SYMMETRY: Most gestures (stop, point, refuse) are UNILATERAL (one-handed). To do a one-handed gesture, "
-    "move the dominant hand to the target, and force the non-dominant hand to REST exactly at [0.0, +/-0.1, 0.0].\n"
+    "You MUST obey the 'use_hand' parameter from the input.\n"
+    "- If use_hand is 'right': The left hand MUST be forced to REST at [0.0, 0.07, 0.0] with 'palms_in'. Only map coordinates for the right hand.\n"
+    "- If use_hand is 'left': The right hand MUST be forced to REST at [0.0, -0.07, 0.0] with 'palms_in'. Only map coordinates for the left hand.\n"
+    "- If use_hand is 'both': Map coordinates for both hands symmetrically or as described.\n"
     "\n"
-    "GESTURE DESIGN:\n"
-    "- 'Stop' or 'Halt': One hand ONLY. X=0.15 (close to chest), Z=0.0 (chest height), orientation: 'palms_forward'.\n"
-    "- 'Welcome' or 'Present': Both hands. X=0.15, Y=+/- 0.25, Z=-0.15 (waist level), orientation: 'palms_up'.\n"
+    "PHYSICAL CONSTRAINTS (CRITICAL):\n"
+    " - The Origin (0.0, 0.0, 0.0) is located at the center of NAO's lower torso.\n"
+    "- X (Forward/Back): Max 0.25 meters. 0.0 is the lower torso.\n"
+    "- Y (Left/Right): Max 0.25 metres. 0.0 is the lower torso. Left hand side positive Y. Right hand side negative Y.\n"
+    "- Z (Up/Down): Min 0.0 metres. 0.0 is the lower torso. +0.15 is the upper chest. +0.25 is the face.\n"
+    "- Orientations: MUST be one of ['palms_up', 'palms_down', 'palms_in', 'palms_out', 'palms_forward', 'palms_backward'].\n"
     "\n"
-    "Example Output:\n"
+    "SPATIAL GUIDELINES (Apply only to the active hand(s)):\n"
+    "- 'Stop': X=0.15, Z=0.05, orientation: 'palms_forward'.\n"
+    "- 'Welcome' or 'Present': X=0.15, active Y=+/- 0.2, Z=0.0, orientation: 'palms_up'.\n"
+    "\n"
+    "Example Output (If input says use_hand: 'right'):\n"
     "```json\n"
-    '{"left_hand_pos": [0.15, 0.25, -0.15], "right_hand_pos": [0.15, -0.25, -0.15], "orientation": "palms_up", "duration": 1.5}\n'
+    '{"left_hand_pos": [0.0, 0.07, 0.0], "left_orientation": "palms_in", "right_hand_pos": [0.15, -0.2, 0.1], "right_orientation": "palms_up", "duration": 2.5}\n'
     "```"
 )
 
@@ -132,6 +140,12 @@ def get_hardcoded_rotation(orientation_string, is_left):
         # Palms In: Palm faces LEFT (+Y), Back of hand RIGHT (-Y), Thumb UP (+Z)
         "palms_in": np.array([
             [1.0,  0.0,  0.0],
+            [0.0,  0.0,  -1.0],
+            [0.0, -1.0,  0.0]
+        ]),
+        # Palms Out: Back of hand faces LEFT (+Y, inwards), Palm faces RIGHT (-Y, outwards)
+        "palms_out": np.array([
+            [1.0,  0.0,  0.0],
             [0.0,  0.0,  1.0],
             [0.0, -1.0,  0.0]
         ]),
@@ -166,6 +180,12 @@ def get_hardcoded_rotation(orientation_string, is_left):
         ]),
         # Palms In: Palm faces RIGHT (-Y), Back of hand LEFT (+Y), Thumb UP (-Z local? No, Y local is DOWN)
         "palms_in": np.array([
+            [1.0,  0.0,  0.0],
+            [0.0,  0.0, 1.0],
+            [0.0,  1.0,  0.0]
+        ]),
+        # Palms Out: Back of hand faces RIGHT (-Y, inwards), Palm faces LEFT (+Y, outwards)
+        "palms_out": np.array([
             [1.0,  0.0,  0.0],
             [0.0,  0.0, -1.0],
             [0.0,  1.0,  0.0]
@@ -239,9 +259,10 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
         trajectory_times = {name: [] for name in joint_names}
 
         # Grab the desired orientation from the LLM, default to palms_in
-        intent_orientation = cartesian_target.get("orientation", "palms_in")
-        R_left = get_hardcoded_rotation(intent_orientation, is_left=True)
-        R_right = get_hardcoded_rotation(intent_orientation, is_left=False)
+        l_orient = cartesian_target.get("left_orientation", "palms_in")
+        r_orient = cartesian_target.get("right_orientation", "palms_in")
+        R_left = get_hardcoded_rotation(l_orient, is_left=True)
+        R_right = get_hardcoded_rotation(r_orient, is_left=False)
 
         # 5. Simulation Loop
         for t in time_steps:
