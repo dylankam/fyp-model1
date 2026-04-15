@@ -141,7 +141,7 @@ def get_hardcoded_rotation(orientation_string, is_left):
         "palms_in": np.array([
             [1.0,  0.0,  0.0],
             [0.0,  0.0,  -1.0],
-            [0.0, -1.0,  0.0]
+            [0.0, 1.0,  0.0]
         ]),
         # Palms Out: Back of hand faces LEFT (+Y, inwards), Palm faces RIGHT (-Y, outwards)
         "palms_out": np.array([
@@ -182,7 +182,7 @@ def get_hardcoded_rotation(orientation_string, is_left):
         "palms_in": np.array([
             [1.0,  0.0,  0.0],
             [0.0,  0.0, 1.0],
-            [0.0,  1.0,  0.0]
+            [0.0,  -1.0,  0.0]
         ]),
         # Palms Out: Back of hand faces RIGHT (-Y, inwards), Palm faces LEFT (+Y, outwards)
         "palms_out": np.array([
