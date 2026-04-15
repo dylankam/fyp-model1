@@ -54,6 +54,7 @@ LLM2_PROMPT = (
     "- Y (Left/Right): Max 0.25 metres. 0.0 is the lower torso. Left hand side positive Y. Right hand side negative Y.\n"
     "- Z (Up/Down): Min 0.0 metres. 0.0 is the lower torso. +0.15 is the upper chest. +0.25 is the face.\n"
     "- Orientations: MUST be one of ['palms_up', 'palms_down', 'palms_in', 'palms_out', 'palms_forward', 'palms_backward'].\n"
+    "- Fingers: MUST be one of ['up', 'down', 'left', 'right', 'forward', 'backward'].\n"
     "\n"
     "SPATIAL GUIDELINES (Apply only to the active hand(s)):\n"
     "- 'Stop': X=0.15, Z=0.05, orientation: 'palms_forward'.\n"
@@ -61,7 +62,7 @@ LLM2_PROMPT = (
     "\n"
     "Example Output (If input says use_hand: 'right'):\n"
     "```json\n"
-    '{"left_hand_pos": [0.0, 0.07, 0.0], "left_orientation": "palms_in", "right_hand_pos": [0.15, -0.2, 0.1], "right_orientation": "palms_up", "duration": 2.5}\n'
+    '{"left_hand_pos": [0.0, 0.07, 0.0], "left_orientation": "palms_in", "left_fingers": "down", "right_hand_pos": [0.15, -0.2, 0.1], "right_orientation": "palms_up", "right_fingers": "forward", "duration": 2.5}\n'
     "```"
 )
 
@@ -115,100 +116,63 @@ def generate_tts_and_duration(sentence, index):
 #     # Fallback to palms_in if the LLM hallucinates a weird string
 #     return orientations.get(orientation_string, orientations["palms_in"])
 
-def get_hardcoded_rotation(orientation_string, is_left):
+import numpy as np
+
+def get_dynamic_rotation(orientation_string, finger_string, is_left):
     """
-    Returns a 3x3 numpy rotation matrix explicitly mapped for Left/Right chirality.
-    Global Frame: +X is Forward, +Y is Left, +Z is Up.
-    Local Hand: +X is Fingertips, +Z is Back of Hand.
+    Dynamically constructs a 3x3 rotation matrix from finger and palm vectors.
     """
+    # 1. Map Finger String to Global X-Axis Vector
+    finger_vectors = {
+        "forward": np.array([1.0, 0.0, 0.0]),
+        "backward": np.array([-1.0, 0.0, 0.0]),
+        "up": np.array([0.0, 0.0, 1.0]),
+        "down": np.array([0.0, 0.0, -1.0]),
+        "left": np.array([0.0, 1.0, 0.0]),
+        "right": np.array([0.0, -1.0, 0.0])
+    }
     
-    # ---------------- RIGHT HAND MATRICES ----------------
-    # +Y is the Thumb side.
-    right_orientations = {
-        # Palms Down: Back of hand UP (+Z), Thumb LEFT (+Y)
-        "palms_down": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0,  1.0,  0.0],
-            [0.0,  0.0,  1.0]
-        ]),
-        # Palms Up: Back of hand DOWN (-Z), Thumb RIGHT (-Y)
-        "palms_up": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0, -1.0,  0.0],
-            [0.0,  0.0, -1.0]
-        ]),
-        # Palms In: Palm faces LEFT (+Y), Back of hand RIGHT (-Y), Thumb UP (+Z)
-        "palms_in": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0,  0.0,  -1.0],
-            [0.0, 1.0,  0.0]
-        ]),
-        # Palms Out: Back of hand faces LEFT (+Y, inwards), Palm faces RIGHT (-Y, outwards)
-        "palms_out": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0,  0.0,  1.0],
-            [0.0, -1.0,  0.0]
-        ]),
-        # Palms Forward (Stop): Fingers UP (+Z), Back of hand BACKWARD (-X)
-        "palms_forward": np.array([
-            [0.0,  0.0, -1.0],
-            [0.0,  1.0,  0.0],
-            [1.0,  0.0,  0.0]
-        ]),
-        # Palms Backward: Fingers UP (+Z), Back of hand FORWARD (+X)
-        "palms_backward": np.array([
-            [0.0,  0.0,  1.0],
-            [0.0, -1.0,  0.0],
-            [1.0,  0.0,  0.0]
-        ])
+    # 2. Map Palm String to Global Z-Axis Vector (Back of the Hand)
+    # Remember: Z is the BACK of the hand, so it is the opposite of the palm direction.
+    back_of_hand_vectors = {
+        "palms_up": np.array([0.0, 0.0, -1.0]),       # Palm is +Z, Back is -Z
+        "palms_down": np.array([0.0, 0.0, 1.0]),      # Palm is -Z, Back is +Z
+        "palms_forward": np.array([-1.0, 0.0, 0.0]),  # Palm is +X, Back is -X
+        "palms_backward": np.array([1.0, 0.0, 0.0])   # Palm is -X, Back is +X
     }
 
-    # ---------------- LEFT HAND MATRICES ----------------
-    # +Y is the Pinky side (Thumb is -Y).
-    left_orientations = {
-        # Palms Down: Back of hand UP (+Z), Pinky LEFT (+Y)
-        "palms_down": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0,  1.0,  0.0],
-            [0.0,  0.0,  1.0]
-        ]),
-        # Palms Up: Back of hand DOWN (-Z), Pinky RIGHT (-Y)
-        "palms_up": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0, -1.0,  0.0],
-            [0.0,  0.0, -1.0]
-        ]),
-        # Palms In: Palm faces RIGHT (-Y), Back of hand LEFT (+Y), Thumb UP (-Z local? No, Y local is DOWN)
-        "palms_in": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0,  0.0, 1.0],
-            [0.0,  -1.0,  0.0]
-        ]),
-        # Palms Out: Back of hand faces RIGHT (-Y, inwards), Palm faces LEFT (+Y, outwards)
-        "palms_out": np.array([
-            [1.0,  0.0,  0.0],
-            [0.0,  0.0, -1.0],
-            [0.0,  1.0,  0.0]
-        ]),
-        # Palms Forward (Stop): Fingers UP (+Z), Back of hand BACKWARD (-X)
-        "palms_forward": np.array([
-            [0.0,  0.0, -1.0],
-            [0.0,  1.0,  0.0],
-            [1.0,  0.0,  0.0]
-        ]),
-        # Palms Backward: Fingers UP (+Z), Back of hand FORWARD (+X)
-        "palms_backward": np.array([
-            [0.0,  0.0,  1.0],
-            [0.0, -1.0,  0.0],
-            [1.0,  0.0,  0.0]
-        ])
-    }
+    # Handle Chirality for In/Out
+    if is_left:
+        # Left arm: Palm in faces RIGHT (-Y). Back of hand faces LEFT (+Y).
+        back_of_hand_vectors["palms_in"] = np.array([0.0, 1.0, 0.0])
+        back_of_hand_vectors["palms_out"] = np.array([0.0, -1.0, 0.0])
+    else:
+        # Right arm: Palm in faces LEFT (+Y). Back of hand faces RIGHT (-Y).
+        back_of_hand_vectors["palms_in"] = np.array([0.0, -1.0, 0.0])
+        back_of_hand_vectors["palms_out"] = np.array([0.0, 1.0, 0.0])
 
-    # Fetch the corresponding dictionary
-    active_dict = left_orientations if is_left else right_orientations
+    # Fetch the vectors (with safe fallbacks)
+    X_axis = finger_vectors.get(finger_string, np.array([1.0, 0.0, 0.0]))
+    Z_axis = back_of_hand_vectors.get(orientation_string, back_of_hand_vectors["palms_in"])
+
+    # 3. Orthogonality Check (Prevent Physics Crashes)
+    # The fingers (X) and the back of the hand (Z) MUST be perpendicular (dot product = 0).
+    # If the LLM hallucinates (e.g., fingers "forward" AND palms "forward"), fix it.
+    if np.abs(np.dot(X_axis, Z_axis)) > 0.1:
+        # Force a valid perpendicular Z-axis depending on the finger direction
+        if X_axis[2] == 0:  # If fingers are horizontal, force palms down
+            Z_axis = np.array([0.0, 0.0, 1.0])
+        else:               # If fingers are vertical, force palms in
+            Z_axis = back_of_hand_vectors["palms_in"]
+
+    # 4. Calculate Y-Axis via Cross Product
+    Y_axis = np.cross(Z_axis, X_axis)
+
+    # 5. Stack the vectors into a 3x3 matrix
+    # np.column_stack takes 1D arrays and turns them into the columns of a 2D matrix
+    rotation_matrix = np.column_stack((X_axis, Y_axis, Z_axis))
     
-    # Return the requested matrix, default to palms_in if the LLM hallucinates
-    return active_dict.get(orientation_string, active_dict["palms_in"])
+    return rotation_matrix
 
 def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
     """
@@ -261,8 +225,10 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
         # Grab the desired orientation from the LLM, default to palms_in
         l_orient = cartesian_target.get("left_orientation", "palms_in")
         r_orient = cartesian_target.get("right_orientation", "palms_in")
-        R_left = get_hardcoded_rotation(l_orient, is_left=True)
-        R_right = get_hardcoded_rotation(r_orient, is_left=False)
+        l_fingers = cartesian_target.get("left_fingers", "down")
+        r_fingers = cartesian_target.get("right_fingers", "down")
+        R_left = get_dynamic_rotation(l_orient, l_fingers, is_left=True)
+        R_right = get_dynamic_rotation(r_orient, r_fingers, is_left=False)
 
         # 5. Simulation Loop
         for t in time_steps:
