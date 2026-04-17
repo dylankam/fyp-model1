@@ -41,12 +41,13 @@ LLM1_PROMPT = (
 LLM2_PROMPT = (
     "You are a Cartesian mapping model for a NAO humanoid robot (0.5m tall).\n"
     "Input: A JSON intent containing 'use_hand' ('left', 'right', or 'both'), a description, and duration.\n"
-    "Output: A JSON block containing target (x, y, z), orientation, AND fingers direction for the left and right hands independently.\n"
+    "Output: A JSON block containing 'use_hand', target (x, y, z), orientation, AND fingers direction ONLY for the active hand(s).\n"
     "\n"
-    "You MUST obey the 'use_hand' parameter from the input.\n"
-    "- If use_hand is 'right': The left hand MUST be forced to REST at [0.0, 0.07, 0.0] with left_orientation: 'palms_in' and left_fingers: 'down'. Only map coordinates for the right hand.\n"
-    "- If use_hand is 'left': The right hand MUST be forced to REST at [0.0, -0.07, 0.0] with right_orientation: 'palms_in' and right_fingers: 'down'. Only map coordinates for the left hand.\n"
-    "- If use_hand is 'both': Map coordinates for both hands symmetrically or as described.\n"
+    "THE use_hand RULE:\n"
+    "You MUST include the 'use_hand' key in your output.\n"
+    "- If use_hand is 'right': Output ONLY right_hand keys. OMIT ALL left_hand keys entirely.\n"
+    "- If use_hand is 'left': Output ONLY left_hand keys. OMIT ALL right_hand keys entirely.\n"
+    "- If use_hand is 'both': Output keys for both hands.\n"
     "\n"
     "PHYSICAL CONSTRAINTS (CRITICAL):\n"
     "- The Origin (0.0, 0.0, 0.0) is located at the center of NAO's lower torso.\n"
@@ -58,17 +59,17 @@ LLM2_PROMPT = (
     "\n"
     "ORTHOGONALITY RULE (ANATOMY LIMITS):\n"
     "Palms and fingers CANNOT point along the same axis. They must be 90 degrees apart.\n"
-    "- If palm is 'forward' or 'backward', fingers MUST be 'up', 'down', 'left', or 'right'.\n"
-    "- If palm is 'up' or 'down', fingers MUST be 'forward', 'backward', 'left', or 'right'.\n"
-    "- If palm is 'in' or 'out', fingers MUST be 'forward', 'backward', 'up', or 'down'.\n"
+    "- If palm is 'forward'/'backward', fingers MUST be 'up', 'down', 'left', or 'right'.\n"
+    "- If palm is 'up'/'down', fingers MUST be 'forward', 'backward', 'left', or 'right'.\n"
+    "- If palm is 'in'/'out', fingers MUST be 'forward', 'backward', 'up', or 'down'.\n"
     "\n"
-    "SPATIAL GUIDELINES (Apply only to the active hand(s)):\n"
+    "SPATIAL GUIDELINES:\n"
     "- 'Stop': X=0.15, Z=0.05, orientation: 'palms_forward', fingers: 'up'.\n"
     "- 'Welcome' or 'Present': X=0.15, active Y=+/- 0.2, Z=0.05, orientation: 'palms_up', fingers: 'forward'.\n"
     "\n"
     "Example Output (If input says use_hand: 'right'):\n"
     "```json\n"
-    '{"left_hand_pos": [0.0, 0.07, 0.0], "left_orientation": "palms_in", "left_fingers": "down", "right_hand_pos": [0.15, -0.2, 0.1], "right_orientation": "palms_up", "right_fingers": "forward", "duration": 2.5}\n'
+    '{"use_hand": "right", "right_hand_pos": [0.15, -0.07, 0.05], "right_orientation": "palms_forward", "right_fingers": "up", "duration": 1.6}\n'
     "```"
 )
 
@@ -194,24 +195,42 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
 
         configuration = pink.Configuration(robot.model, robot.data, robot.q0)
 
-        # 2. Setup Tasks
-        l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.2)
-        r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.2)
+        # 2. Get the active hand from the JSON (default to both for safety)
+        use_hand = cartesian_target.get("use_hand", "both")
 
+        # 3. Initialize Tasks List
+        tasks = []
+
+        # Global Posture Task (keeps the torso/legs from collapsing)
         q_ref = robot.q0.copy()
         posture_task = PostureTask(cost=0.01)
         posture_task.set_target(q_ref)
+        tasks.append(posture_task)
 
-        tasks = [l_wrist_task, r_wrist_task, posture_task]
+        # 4. Conditionally Setup Hand Tasks (Task Masking)
+        if use_hand in ["left", "both"]:
+            l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.2)
+            initial_l_pos = configuration.get_transform_frame_to_world("l_wrist").translation
+            target_l_pos = np.array(cartesian_target.get("left_hand_pos", initial_l_pos))
+            
+            l_orient = cartesian_target.get("left_orientation", "palms_in")
+            l_fingers = cartesian_target.get("left_fingers", "down")
+            R_left = get_dynamic_rotation(l_orient, l_fingers, is_left=True)
+            
+            tasks.append(l_wrist_task)
 
-        # 3. Get Initial vs Target Positions
-        initial_l_pos = configuration.get_transform_frame_to_world("l_wrist").translation
-        initial_r_pos = configuration.get_transform_frame_to_world("r_wrist").translation
+        if use_hand in ["right", "both"]:
+            r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.2)
+            initial_r_pos = configuration.get_transform_frame_to_world("r_wrist").translation
+            target_r_pos = np.array(cartesian_target.get("right_hand_pos", initial_r_pos))
+            
+            r_orient = cartesian_target.get("right_orientation", "palms_in")
+            r_fingers = cartesian_target.get("right_fingers", "down")
+            R_right = get_dynamic_rotation(r_orient, r_fingers, is_left=False)
+            
+            tasks.append(r_wrist_task)
 
-        target_l_pos = np.array(cartesian_target.get("left_hand_pos", initial_l_pos))
-        target_r_pos = np.array(cartesian_target.get("right_hand_pos", initial_r_pos))
-
-        # 4. Prepare Trajectory Storage
+        # 5. Prepare Trajectory Storage
         time_steps = np.arange(0, duration, dt)
         if len(time_steps) == 0: 
             time_steps = [duration]
@@ -228,24 +247,20 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
         trajectory_angles = {name: [] for name in joint_names}
         trajectory_times = {name: [] for name in joint_names}
 
-        # Grab the desired orientation from the LLM, default to palms_in
-        l_orient = cartesian_target.get("left_orientation", "palms_in")
-        r_orient = cartesian_target.get("right_orientation", "palms_in")
-        l_fingers = cartesian_target.get("left_fingers", "down")
-        r_fingers = cartesian_target.get("right_fingers", "down")
-        R_left = get_dynamic_rotation(l_orient, l_fingers, is_left=True)
-        R_right = get_dynamic_rotation(r_orient, r_fingers, is_left=False)
-
-        # 5. Simulation Loop
+        # 6. Simulation Loop
         for t in time_steps:
             progress = min(t / duration, 1.0)
-            cur_l_target = initial_l_pos + progress * (target_l_pos - initial_l_pos)
-            cur_r_target = initial_r_pos + progress * (target_r_pos - initial_r_pos)
+            
+            # Conditionally update targets only for the active hand(s)
+            if use_hand in ["left", "both"]:
+                cur_l_target = initial_l_pos + progress * (target_l_pos - initial_l_pos)
+                l_wrist_task.set_target(pin.SE3(R_left, cur_l_target))
+                
+            if use_hand in ["right", "both"]:
+                cur_r_target = initial_r_pos + progress * (target_r_pos - initial_r_pos)
+                r_wrist_task.set_target(pin.SE3(R_right, cur_r_target))
 
-            # Apply BOTH the moving translation and the static rotation matrix
-            l_wrist_task.set_target(pin.SE3(R_left, cur_l_target))
-            r_wrist_task.set_target(pin.SE3(R_right, cur_r_target))
-
+            # Solve IK using ONLY the tasks inside the dynamic list
             velocity = solve_ik(configuration, tasks, dt, solver="quadprog")
             configuration.integrate_inplace(velocity, dt)
 
@@ -253,11 +268,29 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
                 trajectory_angles[name].append(float(configuration.q[q_idx]))
                 trajectory_times[name].append(float(t + dt))
 
-        # 6. Format for ALMotion Client
+        # 7. Output Masking (Filter out the inactive arm)
+        final_names = []
+        final_times = []
+        final_angles = []
+
+        for name in joint_names:
+            is_left_arm = name.startswith("LShoulder") or name.startswith("LElbow") or name.startswith("LWrist")
+            is_right_arm = name.startswith("RShoulder") or name.startswith("RElbow") or name.startswith("RWrist")
+
+            # Drop the joints of the arm that isn't being used
+            if use_hand == "right" and is_left_arm:
+                continue
+            if use_hand == "left" and is_right_arm:
+                continue
+
+            final_names.append(name)
+            final_times.append(trajectory_times[name])
+            final_angles.append(trajectory_angles[name])
+
         return {
-            "names": joint_names,
-            "times": [trajectory_times[name] for name in joint_names],
-            "angles": [trajectory_angles[name] for name in joint_names]
+            "names": final_names,
+            "times": final_times,
+            "angles": final_angles
         }
         
     except Exception as e:
