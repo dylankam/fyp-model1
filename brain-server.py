@@ -118,25 +118,6 @@ def generate_tts_and_duration(sentence, index):
     os.remove(filename)
     return encoded_audio, duration
 
-# def get_rotation_matrix(orientation_string, is_left_hand):
-#     """Maps qualitative strings to 3x3 rotation matrices using Roll, Pitch, Yaw."""
-#     # Base roll adjustments (might need flipping depending on NAO's exact URDF frame)
-#     roll_flip = 1.0 if is_left_hand else -1.0 
-    
-#     # Defaults: Assuming 0,0,0 is palms facing inward (towards the legs)
-#     orientations = {
-#         "palms_in": pin.rpy.rpyToMatrix(0.0, 0.0, 0.0),
-#         "palms_down": pin.rpy.rpyToMatrix(1.57 * roll_flip, 0.0, 0.0),
-#         "palms_up": pin.rpy.rpyToMatrix(-1.57 * roll_flip, 0.0, 0.0),
-#         "palms_forward": pin.rpy.rpyToMatrix(0.0, -1.57, 0.0),
-#         "palms_out": pin.rpy.rpyToMatrix(3.14, 0.0, 0.0)
-#     }
-    
-#     # Fallback to palms_in if the LLM hallucinates a weird string
-#     return orientations.get(orientation_string, orientations["palms_in"])
-
-import numpy as np
-
 def get_dynamic_rotation(orientation_string, finger_string, is_left):
     """
     Dynamically constructs a 3x3 rotation matrix from finger and palm vectors.
@@ -152,48 +133,35 @@ def get_dynamic_rotation(orientation_string, finger_string, is_left):
     }
     
     # 2. Map Palm String to Global Z-Axis Vector (Back of the Hand)
-    # Remember: Z is the BACK of the hand, so it is the opposite of the palm direction.
     back_of_hand_vectors = {
-        "palms_up": np.array([0.0, 0.0, -1.0]),       # Palm is +Z, Back is -Z
-        "palms_down": np.array([0.0, 0.0, 1.0]),      # Palm is -Z, Back is +Z
-        "palms_forward": np.array([-1.0, 0.0, 0.0]),  # Palm is +X, Back is -X
-        "palms_backward": np.array([1.0, 0.0, 0.0])   # Palm is -X, Back is +X
+        "palms_up": np.array([0.0, 0.0, -1.0]),       
+        "palms_down": np.array([0.0, 0.0, 1.0]),      
+        "palms_forward": np.array([-1.0, 0.0, 0.0]),  
+        "palms_backward": np.array([1.0, 0.0, 0.0])   
     }
 
-    # Handle Chirality for In/Out
     if is_left:
-        # Left arm: Palm in faces RIGHT (-Y). Back of hand faces LEFT (+Y).
         back_of_hand_vectors["palms_in"] = np.array([0.0, 1.0, 0.0])
         back_of_hand_vectors["palms_out"] = np.array([0.0, -1.0, 0.0])
     else:
-        # Right arm: Palm in faces LEFT (+Y). Back of hand faces RIGHT (-Y).
         back_of_hand_vectors["palms_in"] = np.array([0.0, -1.0, 0.0])
         back_of_hand_vectors["palms_out"] = np.array([0.0, 1.0, 0.0])
 
-    # Fetch the vectors (with safe fallbacks)
     X_axis = finger_vectors.get(finger_string, np.array([1.0, 0.0, 0.0]))
     Z_axis = back_of_hand_vectors.get(orientation_string, back_of_hand_vectors["palms_in"])
 
-    # 3. Orthogonality Check (Prevent Physics Crashes)
-    # The fingers (X) and the back of the hand (Z) MUST be perpendicular (dot product = 0).
-    # If the LLM hallucinates (e.g., fingers "forward" AND palms "forward"), fix it.
     if np.abs(np.dot(X_axis, Z_axis)) > 0.1:
-        # Force a valid perpendicular Z-axis depending on the finger direction
-        if X_axis[2] == 0:  # If fingers are horizontal, force palms down
+        if X_axis[2] == 0:  
             Z_axis = np.array([0.0, 0.0, 1.0])
-        else:               # If fingers are vertical, force palms in
+        else:               
             Z_axis = back_of_hand_vectors["palms_in"]
 
-    # 4. Calculate Y-Axis via Cross Product
     Y_axis = np.cross(Z_axis, X_axis)
-
-    # 5. Stack the vectors into a 3x3 matrix
-    # np.column_stack takes 1D arrays and turns them into the columns of a 2D matrix
     rotation_matrix = np.column_stack((X_axis, Y_axis, Z_axis))
     
     return rotation_matrix
 
-def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
+def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt=0.04):
     """
     Solves IK over time using PINK and the nao_clean.urdf.
     Outputs the exact dictionary structure expected by ALMotion.angleInterpolation.
@@ -202,26 +170,37 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
         # 1. Load Robot
         urdf_filename = "nao_clean.urdf"
         robot = pin.RobotWrapper.BuildFromURDF(urdf_filename)
-        robot.q0 = np.maximum(robot.q0, robot.model.lowerPositionLimit)
-        robot.q0 = np.minimum(robot.q0, robot.model.upperPositionLimit)
+        
+        # 1.5 Map physical state to initial configuration
+        q_initial = robot.q0.copy()
 
-        configuration = pink.Configuration(robot.model, robot.data, robot.q0)
+        if current_angles:
+            for i in range(1, robot.model.njoints):
+                name = robot.model.names[i]
+                if name in current_angles:
+                    q_idx = robot.model.joints[i].idx_q
+                    q_initial[q_idx] = current_angles[name]
 
-        # 2. Get the active hand from the JSON (default to both for safety)
+        # Enforce physical limits
+        q_initial = np.maximum(q_initial, robot.model.lowerPositionLimit)
+        q_initial = np.minimum(q_initial, robot.model.upperPositionLimit)
+
+        configuration = pink.Configuration(robot.model, robot.data, q_initial)
+
+        # 2. Get the active hand from the JSON
         use_hand = cartesian_target.get("use_hand", "both")
 
         # 3. Initialize Tasks List
         tasks = []
 
-        # Global Posture Task (keeps the torso/legs from collapsing)
-        q_ref = robot.q0.copy()
+        # Global Posture Task (keeps the torso/legs from collapsing, anchors to actual state)
         posture_task = PostureTask(cost=0.01)
-        posture_task.set_target(q_ref)
+        posture_task.set_target(q_initial)
         tasks.append(posture_task)
 
         # 4. Conditionally Setup Hand Tasks (Task Masking)
         if use_hand in ["left", "both"]:
-            l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.0)
+            l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.1)
             initial_l_pos = configuration.get_transform_frame_to_world("l_wrist").translation
             target_l_pos = np.array(cartesian_target.get("left_hand_pos", initial_l_pos))
             
@@ -232,7 +211,7 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
             tasks.append(l_wrist_task)
 
         if use_hand in ["right", "both"]:
-            r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.0)
+            r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.1)
             initial_r_pos = configuration.get_transform_frame_to_world("r_wrist").translation
             target_r_pos = np.array(cartesian_target.get("right_hand_pos", initial_r_pos))
             
@@ -309,7 +288,7 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
         print(f"PINK IK Error: {e}")
         return None
 
-def process_paragraph(paragraph):
+def process_paragraph(paragraph, current_angles=None):
     sentences = re.split(r'(?<=[.!?]) +', paragraph)
     payload = []
     
@@ -329,7 +308,8 @@ def process_paragraph(paragraph):
         print(f"LLM 2 Cartesian: {cartesian_json}")
         
         if cartesian_json:
-            trajectory = generate_pink_trajectory(cartesian_json, duration)
+            # Inject physical angles into trajectory generator
+            trajectory = generate_pink_trajectory(cartesian_json, duration, current_angles)
         else:
             trajectory = None
             print("Skipping IK generation due to missing Cartesian data.")
@@ -345,24 +325,36 @@ def process_paragraph(paragraph):
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Add SO_REUSEADDR so rapid server restarts don't trigger "Address already in use"
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((HOST, PORT))
     server_socket.listen(1)
     print(f"BRAIN SERVER: Listening on {HOST}:{PORT}...")
 
     while True:
         try:
-            print("\n[Waiting for Robot to request next instruction...]")
+            print("\n[Waiting for Robot to connect and report state...]")
             conn, addr = server_socket.accept()
             print(f"Connected to Robot at {addr}")
             
-            data = conn.recv(1024).decode('utf-8')
+            # Increased buffer size to cleanly receive the entire physical state JSON
+            data = conn.recv(4096).decode('utf-8')
             if not data: 
                 conn.close()
                 continue
                 
+            # Parse the robot's physical joint angles
+            current_angles = {}
+            try:
+                robot_state = json.loads(data)
+                current_angles = robot_state.get("angles", {})
+                print(f"Received physical state for {len(current_angles)} joints.")
+            except json.JSONDecodeError:
+                print("Warning: Could not parse robot state, defaulting to URDF resting pose.")
+
             text_to_process = input("Enter paragraph for NAO to execute: ")
             
-            final_payload = process_paragraph(text_to_process)
+            final_payload = process_paragraph(text_to_process, current_angles)
             
             json_string = json.dumps(final_payload) + "<EOF>"
             conn.sendall(json_string.encode('utf-8'))

@@ -3,21 +3,38 @@ import json
 import base64
 import os
 import tempfile 
+import time
 from naoqi import ALProxy
 
 # --- CONFIGURATION ---
 SERVER_IP = '127.0.0.1' # Change to the IP of your Python 3 machine
 SERVER_PORT = 65432
 ROBOT_IP = "127.0.0.1"  # Change to physical robot IP if not using simulator
-ROBOT_PORT = 9559
+ROBOT_PORT = 58690
 
-def connect_to_server():
+def connect_to_server(motion):
     try:
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_socket.connect((SERVER_IP, SERVER_PORT))
-        client_socket.sendall("Requesting execution payload\n")
         
-        # Receive the data chunks until the delimiter
+        # 1. READ PHYSICAL REALITY
+        # Get all joint names and their current angles in radians
+        joint_names = motion.getBodyNames("Body")
+        joint_angles = motion.getAngles("Body", True)
+        
+        # Zip them into a dictionary { "LShoulderPitch": 1.52, ... }
+        current_state_dict = dict(zip(joint_names, joint_angles))
+        
+        # 2. PACKAGE AND SEND
+        request_payload = {
+            "status": "ready",
+            "angles": current_state_dict
+        }
+        
+        # Send the state to the Brain Server as JSON
+        client_socket.sendall(json.dumps(request_payload))
+        
+        # 3. Receive the data chunks until the delimiter
         buffer_string = ""
         while True:
             chunk = client_socket.recv(4096)
@@ -34,19 +51,7 @@ def connect_to_server():
         print("Socket Error:", e)
         return None
 
-def execute_payload(payload):
-    try:
-        motion = ALProxy("ALMotion", ROBOT_IP, ROBOT_PORT)
-        audio_player = ALProxy("ALAudioPlayer", ROBOT_IP, ROBOT_PORT)
-        memory = ALProxy("ALMemory", ROBOT_IP, ROBOT_PORT)
-        posture = ALProxy("ALRobotPosture", ROBOT_IP, ROBOT_PORT)
-    except Exception as e:
-        print("Could not create proxies:", e)
-        return
-
-    # Wake up robot and set stiffness
-    motion.wakeUp()
-    
+def execute_payload(payload, motion, audio_player, memory, posture):
     for item in payload:
         sentence = item["sentence"]
         audio_b64 = item["audio_b64"]
@@ -65,18 +70,15 @@ def execute_payload(payload):
         if traj:
             ascii_names = [str(name) for name in traj["names"]]
             
-            # Extract the very first angle for each joint from the trajectory
-            start_angles = [angles_list[0] for angles_list in traj["angles"]]
-            
-            # Gently move to PINK's starting position over 1.5 seconds
-            print("Moving to prep pose...")
-            motion.angleInterpolation(ascii_names, start_angles, 1.5, True)
+            # Note: The "prep pose" step was removed here. 
+            # Because of the Closed-Loop architecture, the first frame of the trajectory 
+            # is identical to the robot's current pose. It will transition seamlessly.
 
             # --- THE TIME DILATION FIX ---
             # Stretch the timestamps by 5% to absorb quintic spline rounding errors
             safe_times = []
             for time_list in traj["times"]:
-                safe_times.append([t * 1.05 for t in time_list])
+                safe_times.append([(t * 1.05) + 0.35 for t in time_list])
             # -----------------------------
 
             # 3. Start Audio (Non-blocking using 'post')
@@ -98,23 +100,36 @@ def execute_payload(payload):
         except:
             pass
 
-    # Return to neutral pose
+    # Return to neutral pose only after the ENTIRE paragraph is done
     print("Returning to neutral standing pose...")
     posture.goToPosture("Stand", 0.5)
-
-import time # Add this to your imports at the top of the file if not already there
 
 if __name__ == "__main__":
     print("Starting NAO Client Loop...")
     
+    # Initialize Proxies once globally so both functions can use them
+    try:
+        motion = ALProxy("ALMotion", ROBOT_IP, ROBOT_PORT)
+        audio_player = ALProxy("ALAudioPlayer", ROBOT_IP, ROBOT_PORT)
+        memory = ALProxy("ALMemory", ROBOT_IP, ROBOT_PORT)
+        posture = ALProxy("ALRobotPosture", ROBOT_IP, ROBOT_PORT)
+    except Exception as e:
+        print("Could not create proxies:", e)
+        exit(1)
+
+    # Wake up robot and set stiffness
+    motion.wakeUp()
+    
     # Wrap the execution in an infinite loop
     while True:
         print("\nConnecting to Brain Server...")
-        payload = connect_to_server()
+        # Pass motion into the server connection so it can read the body state
+        payload = connect_to_server(motion)
         
         if payload:
             print("Payload received. Beginning execution.")
-            execute_payload(payload)
+            # Pass all initialized proxies into the execution function
+            execute_payload(payload, motion, audio_player, memory, posture)
         else:
             print("Server not ready or disconnected. Retrying in 3 seconds...")
             time.sleep(3)
