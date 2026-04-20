@@ -12,6 +12,7 @@ import pinocchio as pin
 import pink
 from pink import solve_ik
 from pink.tasks import FrameTask, PostureTask
+import time
 
 # --- CONFIGURATION ---
 HOST = '0.0.0.0'
@@ -25,16 +26,27 @@ print("Gemini Client Initialized:", "Yes" if client else "No")
 LLM1_PROMPT = (
     "You are the linguistic intent analyzer for a humanoid robot.\n"
     "Input: A spoken sentence and its audio duration in seconds.\n"
-    "Output: A JSON block containing the original text, the duration, the required handedness, and a short physical description of the gesture.\n"
+    "Output: A JSON block containing the original text, the duration, the required handedness, and a clear physical description of the gesture.\n"
+    "\n"
+    "HARDWARE CONSTRAINTS:\n"
+    "- The robot has simple mitten-like grippers. Do not describe individual finger movements (e.g., pointing with an index finger, making a fist). Describe the hand and wrist as a single unit.\n"
     "\n"
     "RULES:\n"
     "- 'use_hand' MUST be exactly one of: 'left', 'right', or 'both'.\n"
-    "- If the gesture is unilateral (e.g., pointing, stopping, refusing), default to 'right' unless the text implies left.\n"
-    "- 'description' MUST be a short, clear, one-sentence physical description of what the hands should do. Do not use abstract terms; describe the physical motion.\n"
+    "- If the gesture is unilateral (e.g., stopping, refusing), default to 'right' unless the text implies left.\n"
+    "- 'description' MUST clearly describe the physical motion and final pose of the arms and hands in natural language. Be descriptive enough that an animator could easily visualize it (e.g., mention general height, arm extension, palm direction and finger direction (perpendicular to palms)).\n"
     "\n"
-    "Example Output:\n"
+    "Example Output 1:\n"
     "```json\n"
-    '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its hand to chest level with the palm facing forward in a halting motion.", "duration": 1.6}\n'
+    '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its right arm, bending the elbow to bring the hand to chest height with the palm facing forward in a halting motion.", "duration": 1.6}\n'
+    "```\n"
+    "Example Output 2:\n"
+    "```json\n"
+    '{"text": "Hi there!", "use_hand": "right", "description": "The robot raises its right arm, bending the elbow to hold the hand near head height, and waves it side to side with the palm facing forward.", "duration": 1.5}\n'
+    "```\n"
+    "Example Output 3:\n"
+    "```json\n"
+    '{"text": "Welcome to this demonstration.", "use_hand": "both", "description": "The robot holds both arms down near its waist, bending the elbows slightly to extend the hands forward and outward with palms facing up.", "duration": 2.5}\n'
     "```"
 )
 
@@ -53,7 +65,7 @@ LLM2_PROMPT = (
     "- The Origin (0.0, 0.0, 0.0) is located at the center of NAO's lower torso.\n"
     "- X (Forward/Back): Max 0.25 meters. 0.0 is the lower torso.\n"
     "- Y (Left/Right): Max 0.25 metres. 0.0 is the lower torso. Left hand side positive Y. Right hand side negative Y.\n"
-    "- Z (Up/Down): Min 0.0 metres. 0.0 is the lower torso. +0.15 is the upper chest. +0.25 is the face.\n"
+    "- Z (Up/Down): Min -0.05 metres. 0.0 is the lower torso. +0.15 is the upper chest. +0.25 is the face.\n"
     "- Orientations: MUST be one of ['palms_up', 'palms_down', 'palms_in', 'palms_out', 'palms_forward', 'palms_backward'].\n"
     "- Fingers: MUST be one of ['forward', 'backward', 'up', 'down', 'left', 'right'].\n"
     "\n"
@@ -65,7 +77,7 @@ LLM2_PROMPT = (
     "\n"
     "SPATIAL GUIDELINES:\n"
     "- 'Stop': X=0.15, Z=0.05, orientation: 'palms_forward', fingers: 'up'.\n"
-    "- 'Welcome' or 'Present': X=0.15, active Y=+/- 0.2, Z=0.05, orientation: 'palms_up', fingers: 'forward'.\n"
+    "- 'Welcome' or 'Present': X=0.05, active Y=+/- 0.1, Z=-0.05, orientation: 'palms_up', fingers: 'forward'.\n"
     "\n"
     "Example Output (If input says use_hand: 'right'):\n"
     "```json\n"
@@ -83,7 +95,7 @@ def extract_json(text_response):
 
 def call_llm(prompt_instruction, input_data):
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.1-flash-lite-preview",
         contents=str(input_data),
         config=types.GenerateContentConfig(
             system_instruction=prompt_instruction,
@@ -209,7 +221,7 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
 
         # 4. Conditionally Setup Hand Tasks (Task Masking)
         if use_hand in ["left", "both"]:
-            l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.2)
+            l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.0)
             initial_l_pos = configuration.get_transform_frame_to_world("l_wrist").translation
             target_l_pos = np.array(cartesian_target.get("left_hand_pos", initial_l_pos))
             
@@ -220,7 +232,7 @@ def generate_pink_trajectory(cartesian_target, duration, dt=0.04):
             tasks.append(l_wrist_task)
 
         if use_hand in ["right", "both"]:
-            r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.2)
+            r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.0)
             initial_r_pos = configuration.get_transform_frame_to_world("r_wrist").translation
             target_r_pos = np.array(cartesian_target.get("right_hand_pos", initial_r_pos))
             
@@ -309,10 +321,10 @@ def process_paragraph(paragraph):
         print(f"\nProcessing: {sentence}")
         
         audio_b64, duration = generate_tts_and_duration(sentence, i)
-        
+        print(f"calculated duration: {duration} seconds")
         intent_json = call_llm(LLM1_PROMPT, f"Sentence: {sentence}, Duration: {duration}")
         print(f"LLM 1 Intent: {intent_json}")
-        
+        time.sleep(2)  # Small delay to avoid overwhelming the LLM with rapid calls
         cartesian_json = call_llm(LLM2_PROMPT, intent_json)
         print(f"LLM 2 Cartesian: {cartesian_json}")
         
@@ -327,8 +339,9 @@ def process_paragraph(paragraph):
             "audio_b64": audio_b64,
             "trajectory": trajectory
         })
+        time.sleep(1)  # Small delay before processing the next sentence
         
-    return payload
+    return payload  
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
