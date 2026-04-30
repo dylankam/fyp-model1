@@ -33,6 +33,7 @@ LLM1_PROMPT = (
     "RULES:\n"
     "- 'use_hand' MUST be exactly one of: 'left', 'right', 'both', or 'none'.\n"
     "- If the sentence does not require a gesture (e.g., short transition words, simple factual statements), output 'none' for use_hand.\n"
+    "- SUBTLETY RULE: Keep gestures low and restrained (waist to lower-chest height). Do NOT describe hands going to shoulder or head height unless the sentence explicitly demands extreme excitement, pointing high, or a specific tall pose.\n"
     "- If the gesture is unilateral (e.g., waving), default to 'right' unless the text implies left.\n"
     "- 'description' MUST clearly describe the physical motion and final pose of the arms and hands in natural language. Be descriptive enough that an animator could easily visualize it (e.g., mention general height, arm extension, palm direction and finger direction (perpendicular to palms)).\n"
     "- TEMPORAL SEQUENCES: If the sentence implies sequential actions (e.g., 'On one hand... but on the other...'), explicitly describe the timing (e.g., 'First, the right hand... Then, halfway through, the left hand...').\n"
@@ -62,6 +63,7 @@ LLM2_PROMPT = (
     "\n"
     "KEYFRAME & use_hand RULES:\n"
     "- You MUST output a list of 1 or more keyframes inside a 'keyframes' array.\n"
+    "- Only include more than 1 keyframe if the description implies a clear sequential action (e.g., 'first', 'then', 'afterwards').\n"
     "- Each keyframe MUST have a 'time_fraction' (a float between 0.1 and 1.0) indicating when in the audio this pose is reached.\n"
     "- TIMING & INTERPOLATION (CRITICAL): The robot moves sequentially. Movement toward Keyframe 2 only begins exactly when Keyframe 1's time_fraction is reached.\n"
     "- ANCHORING (HOLDING POSES): If a hand is NOT included in a keyframe, it will completely FREEZE and hold its last known position up to that time_fraction.\n"
@@ -195,6 +197,15 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
 
         q_initial = np.maximum(q_initial, robot.model.lowerPositionLimit)
         q_initial = np.minimum(q_initial, robot.model.upperPositionLimit)
+
+        # Artificially restrict the shoulder pitch to just below straight up (-1.5 radians).
+        # This allows full high-reach gestures but makes backward spinning mathematically impossible.
+        for joint_name in ["LShoulderPitch", "RShoulderPitch"]:
+            if robot.model.existJointName(joint_name):
+                joint_id = robot.model.getJointId(joint_name)
+                idx_q = robot.model.joints[joint_id].idx_q
+                robot.model.lowerPositionLimit[idx_q] = max(robot.model.lowerPositionLimit[idx_q], -1.5)
+
         configuration = pink.Configuration(robot.model, robot.data, q_initial)
 
         # 2. Extract Keyframes and Global Usage
