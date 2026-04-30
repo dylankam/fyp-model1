@@ -31,7 +31,8 @@ LLM1_PROMPT = (
     "- The robot has simple mitten-like grippers. Do not describe individual finger movements (e.g., pointing with an index finger, making a fist). Describe the hand and wrist as a single unit.\n"
     "\n"
     "RULES:\n"
-    "- 'use_hand' MUST be exactly one of: 'left', 'right', or 'both'.\n"
+    "- 'use_hand' MUST be exactly one of: 'left', 'right', 'both', or 'none'.\n"
+    "- If the sentence does not require a gesture (e.g., short transition words, simple factual statements), output 'none' for use_hand.\n"
     "- If the gesture is unilateral (e.g., waving), default to 'right' unless the text implies left.\n"
     "- 'description' MUST clearly describe the physical motion and final pose of the arms and hands in natural language. Be descriptive enough that an animator could easily visualize it (e.g., mention general height, arm extension, palm direction and finger direction (perpendicular to palms)).\n"
     "- TEMPORAL SEQUENCES: If the sentence implies sequential actions (e.g., 'On one hand... but on the other...'), explicitly describe the timing (e.g., 'First, the right hand... Then, halfway through, the left hand...').\n"
@@ -39,6 +40,10 @@ LLM1_PROMPT = (
     "Example Output 1 (Static Target):\n"
     "```json\n"
     '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its right arm, bending the elbow to bring the hand to chest height with the palm facing forward in a halting motion.", "duration": 1.6}\n'
+    "```\n"
+    "Example Output 2 (No Gesture):\n"
+    "```json\n"
+    '{"text": "Blue.", "use_hand": "none", "description": "The robot remains still with no hand movements.", "duration": 0.6}\n'
     "```\n"
     "Example Output 3 (Static Target):\n"
     "```json\n"
@@ -175,16 +180,10 @@ def get_dynamic_rotation(orientation_string, finger_string, is_left):
     return rotation_matrix
 
 def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt=0.04):
-    """
-    Solves IK over time using PINK and the nao_clean.urdf.
-    Outputs the exact dictionary structure expected by ALMotion.angleInterpolation.
-    """
     try:
         # 1. Load Robot
         urdf_filename = "nao_clean.urdf"
         robot = pin.RobotWrapper.BuildFromURDF(urdf_filename)
-        
-        # 1.5 Map physical state to initial configuration
         q_initial = robot.q0.copy()
 
         if current_angles:
@@ -194,118 +193,97 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
                     q_idx = robot.model.joints[i].idx_q
                     q_initial[q_idx] = current_angles[name]
 
-        # Enforce physical limits
         q_initial = np.maximum(q_initial, robot.model.lowerPositionLimit)
         q_initial = np.minimum(q_initial, robot.model.upperPositionLimit)
-
         configuration = pink.Configuration(robot.model, robot.data, q_initial)
 
-        # 2. Extract Keyframes
-        keyframes = cartesian_target.get("keyframes", [])
-        if not keyframes:
-            print("No keyframes found in LLM output.")
-            return None
-            
-        # Ensure keyframes are sorted chronologically
+        # 2. Extract Keyframes and Global Usage
+        keyframes = cartesian_target.get("keyframes", []) if cartesian_target else []
         keyframes = sorted(keyframes, key=lambda k: k.get("time_fraction", 1.0))
 
-        # Check globally which hands are used at ANY point in the trajectory
         global_use_left = any(kf.get("use_hand", "none") in ["left", "both"] for kf in keyframes)
         global_use_right = any(kf.get("use_hand", "none") in ["right", "both"] for kf in keyframes)
 
-        # 3. Initialize Tasks List
-        tasks = []
+        # 3. Define the Absolute Rest Pose (Arms down by sides)
+        REST_L_POS = np.array([0.0, 0.15, -0.1])
+        REST_R_POS = np.array([0.0, -0.15, -0.1])
+        REST_R_LEFT = get_dynamic_rotation("palms_in", "down", is_left=True)
+        REST_R_RIGHT = get_dynamic_rotation("palms_in", "down", is_left=False)
 
-        # Global Posture Task (keeps the torso/legs from collapsing, anchors to actual state)
+        # 4. Initialize Tasks (ALWAYS track both arms now)
+        tasks = []
         posture_task = PostureTask(cost=0.01)
         posture_task.set_target(q_initial)
         tasks.append(posture_task)
 
-        # Get Starting Positions directly from physical reality (t=0.0)
         initial_l_se3 = configuration.get_transform_frame_to_world("l_wrist")
         initial_r_se3 = configuration.get_transform_frame_to_world("r_wrist")
 
-        # Build Waypoint Timelines: Lists of (time_fraction, SE3_Transform)
         l_waypoints = [(0.0, initial_l_se3)]
         r_waypoints = [(0.0, initial_r_se3)]
 
-        # Apply Task Masking with your restored orientation_cost=0.1
+        l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.1)
+        r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.1)
+        tasks.append(l_wrist_task)
+        tasks.append(r_wrist_task)
+
+        # --- LEFT HAND TIMELINE ---
         if global_use_left:
-            l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.1)
-            tasks.append(l_wrist_task)
-            
+            for kf in keyframes:
+                frac = kf.get("time_fraction", 1.0)
+                if kf.get("use_hand", "none") in ["left", "both"]:
+                    l_pos = np.array(kf.get("left_hand_pos", l_waypoints[-1][1].translation))
+                    R_left = get_dynamic_rotation(kf.get("left_orientation", "palms_in"), kf.get("left_fingers", "down"), True)
+                    l_waypoints.append((frac, pin.SE3(R_left, l_pos)))
+                else:
+                    l_waypoints.append((frac, l_waypoints[-1][1]))
+        else:
+            # AUTO-REST: Arm is unused. Smoothly lower it to rest over 30% of the duration.
+            l_waypoints.append((0.3, pin.SE3(REST_R_LEFT, REST_L_POS)))
+            l_waypoints.append((1.0, pin.SE3(REST_R_LEFT, REST_L_POS)))
+
+        # --- RIGHT HAND TIMELINE ---
         if global_use_right:
-            r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.1)
-            tasks.append(r_wrist_task)
+            for kf in keyframes:
+                frac = kf.get("time_fraction", 1.0)
+                if kf.get("use_hand", "none") in ["right", "both"]:
+                    r_pos = np.array(kf.get("right_hand_pos", r_waypoints[-1][1].translation))
+                    R_right = get_dynamic_rotation(kf.get("right_orientation", "palms_in"), kf.get("right_fingers", "down"), False)
+                    r_waypoints.append((frac, pin.SE3(R_right, r_pos)))
+                else:
+                    r_waypoints.append((frac, r_waypoints[-1][1]))
+        else:
+            # AUTO-REST
+            r_waypoints.append((0.3, pin.SE3(REST_R_RIGHT, REST_R_POS)))
+            r_waypoints.append((1.0, pin.SE3(REST_R_RIGHT, REST_R_POS)))
 
-        # Populate the waypoints from the LLM Keyframes
-        for kf in keyframes:
-            frac = kf.get("time_fraction", 1.0)
-            use_hand = kf.get("use_hand", "none")
-
-            # --- LEFT HAND TIMELINE ---
-            if use_hand in ["left", "both"] and global_use_left:
-                l_pos = np.array(kf.get("left_hand_pos", l_waypoints[-1][1].translation))
-                R_left = get_dynamic_rotation(kf.get("left_orientation", "palms_in"), kf.get("left_fingers", "down"), is_left=True)
-                l_waypoints.append((frac, pin.SE3(R_left, l_pos)))
-            elif global_use_left:
-                # ANCHOR WAYPOINT: The left hand isn't moving in this keyframe. 
-                # Force it to hold its previous position right up to this timestamp!
-                last_l_pose = l_waypoints[-1][1]
-                l_waypoints.append((frac, last_l_pose))
-
-            # --- RIGHT HAND TIMELINE ---
-            if use_hand in ["right", "both"] and global_use_right:
-                r_pos = np.array(kf.get("right_hand_pos", r_waypoints[-1][1].translation))
-                R_right = get_dynamic_rotation(kf.get("right_orientation", "palms_in"), kf.get("right_fingers", "down"), is_left=False)
-                r_waypoints.append((frac, pin.SE3(R_right, r_pos)))
-            elif global_use_right:
-                # ANCHOR WAYPOINT: Force the right hand to hold its previous position.
-                last_r_pose = r_waypoints[-1][1]
-                r_waypoints.append((frac, last_r_pose))
-
-        # Helper to smoothly interpolate between waypoints using SLERP
         def get_interpolated_se3(progress, waypoints):
             if progress <= waypoints[0][0]: return waypoints[0][1]
             if progress >= waypoints[-1][0]: return waypoints[-1][1]
-            
             for i in range(len(waypoints) - 1):
                 t1, pose1 = waypoints[i]
                 t2, pose2 = waypoints[i+1]
                 if t1 <= progress <= t2:
-                    # Calculate local percentage between these two specific frames
                     local_progress = (progress - t1) / (t2 - t1) if (t2 - t1) > 0 else 1.0
                     return pin.SE3.Interpolate(pose1, pose2, local_progress)
             return waypoints[-1][1]
 
-        # 4. Prepare Trajectory Storage
+        # 5. Simulation Loop
         time_steps = np.arange(0, duration, dt)
-        if len(time_steps) == 0: 
-            time_steps = [duration]
+        if len(time_steps) == 0: time_steps = [duration]
 
-        joint_names = []
-        joint_indices = []
-        for i in range(1, robot.model.njoints):
-            name = robot.model.names[i]
-            q_idx = robot.model.joints[i].idx_q
-            if "Thumb" not in name and "Finger" not in name and q_idx >= 0:
-                joint_names.append(name)
-                joint_indices.append(q_idx)
-
+        joint_names = [n for i, n in enumerate(robot.model.names) if i > 0 and "Thumb" not in n and "Finger" not in n]
+        joint_indices = [robot.model.joints[i].idx_q for i in range(1, robot.model.njoints) if "Thumb" not in robot.model.names[i] and "Finger" not in robot.model.names[i]]
+        
         trajectory_angles = {name: [] for name in joint_names}
         trajectory_times = {name: [] for name in joint_names}
 
-        # 5. Simulation Loop
         for t in time_steps:
             progress = min(t / duration, 1.0)
             
-            # Dynamically fetch the interpolated SE3 target based on current time
-            if global_use_left:
-                l_wrist_task.set_target(get_interpolated_se3(progress, l_waypoints))
-            if global_use_right:
-                r_wrist_task.set_target(get_interpolated_se3(progress, r_waypoints))
+            l_wrist_task.set_target(get_interpolated_se3(progress, l_waypoints))
+            r_wrist_task.set_target(get_interpolated_se3(progress, r_waypoints))
 
-            # Solve IK using ONLY the tasks inside the dynamic list
             velocity = solve_ik(configuration, tasks, dt, solver="quadprog")
             configuration.integrate_inplace(velocity, dt)
 
@@ -313,30 +291,9 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
                 trajectory_angles[name].append(float(configuration.q[q_idx]))
                 trajectory_times[name].append(float(t + dt))
 
-        # 6. Output Masking (Filter out the inactive arm)
-        final_names = []
-        final_times = []
-        final_angles = []
-
-        for name in joint_names:
-            is_left_arm = name.startswith("LShoulder") or name.startswith("LElbow") or name.startswith("LWrist")
-            is_right_arm = name.startswith("RShoulder") or name.startswith("RElbow") or name.startswith("RWrist")
-
-            # Drop the joints of the arm that isn't used at all in this sequence
-            if not global_use_right and is_right_arm:
-                continue
-            if not global_use_left and is_left_arm:
-                continue
-
-            final_names.append(name)
-            final_times.append(trajectory_times[name])
-            final_angles.append(trajectory_angles[name])
-
-        return {
-            "names": final_names,
-            "times": final_times,
-            "angles": final_angles
-        }
+        # 6. Full Output (Masking Removed)
+        # We now send all upper body joints so the physical robot knows how to lower its arms.
+        return {"names": joint_names, "times": [trajectory_times[n] for n in joint_names], "angles": [trajectory_angles[n] for n in joint_names]}
         
     except Exception as e:
         print(f"PINK IK Error: {e}")
@@ -346,36 +303,48 @@ def process_paragraph(paragraph, current_angles=None):
     sentences = re.split(r'(?<=[.!?]) +', paragraph)
     payload = []
     
+    # Initialize a running tracker starting from the physical reality
+    running_angles = current_angles.copy() if current_angles else {}
+    
     for i, sentence in enumerate(sentences):
         sentence = sentence.strip()
-        if not sentence:
-            continue
+        if not sentence: continue
             
         print(f"\nProcessing: {sentence}")
-        
         audio_b64, duration = generate_tts_and_duration(sentence, i)
-        print(f"calculated duration: {duration} seconds")
+        
         intent_json = call_llm(LLM1_PROMPT, f"Sentence: {sentence}, Duration: {duration}")
         print(f"LLM 1 Intent: {intent_json}")
-        time.sleep(0.1)  # Small delay to avoid overwhelming the LLM with rapid calls
-        cartesian_json = call_llm(LLM2_PROMPT, intent_json)
-        print(f"LLM 2 Cartesian: {cartesian_json}")
+        time.sleep(0.1) 
         
-        if cartesian_json:
-            # Inject physical angles into trajectory generator
-            trajectory = generate_pink_trajectory(cartesian_json, duration, current_angles)
+        use_hand = intent_json.get("use_hand", "none")
+        
+        # Bypass LLM 2 if no gesture is needed
+        if use_hand == "none":
+            print("No active gesture needed. Triggering Auto-Rest.")
+            cartesian_json = {"keyframes": [], "duration": duration}
         else:
-            trajectory = None
-            print("Skipping IK generation due to missing Cartesian data.")
+            cartesian_json = call_llm(LLM2_PROMPT, intent_json)
+            print(f"LLM 2 Cartesian: {cartesian_json}")
+        
+        # Generate the trajectory using the running state, not the start state
+        trajectory = generate_pink_trajectory(cartesian_json, duration, running_angles)
+        
+        # CONTINUOUS STATE UPDATE:
+        # Extract the very last frame of this trajectory and update our running tracker
+        if trajectory and trajectory["angles"]:
+            for name, angles in zip(trajectory["names"], trajectory["angles"]):
+                if len(angles) > 0:
+                    running_angles[name] = angles[-1]
         
         payload.append({
             "sentence": sentence,
             "audio_b64": audio_b64,
             "trajectory": trajectory
         })
-        time.sleep(1)  # Small delay before processing the next sentence
+        time.sleep(0.1) 
         
-    return payload  
+    return payload
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

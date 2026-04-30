@@ -10,7 +10,7 @@ from naoqi import ALProxy
 SERVER_IP = '127.0.0.1' # Change to the IP of your Python 3 machine
 SERVER_PORT = 65432
 ROBOT_IP = "127.0.0.1"  # Change to physical robot IP if not using simulator
-ROBOT_PORT = 58690
+ROBOT_PORT = 65337
 
 def connect_to_server(motion):
     try:
