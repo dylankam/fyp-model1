@@ -13,6 +13,7 @@ import pink
 from pink import solve_ik
 from pink.tasks import FrameTask, PostureTask
 import time
+from robot_profiles import ROBOT_PROFILES
 
 # --- CONFIGURATION ---
 HOST = '0.0.0.0'
@@ -57,7 +58,7 @@ LLM1_PROMPT = (
 )
 
 LLM2_PROMPT = (
-    "You are a Cartesian mapping model for a NAO humanoid robot (0.5m tall).\n"
+    "You are a Cartesian mapping model for a humanoid robot \n"
     "Input: A JSON intent containing 'use_hand' ('left', 'right', or 'both'), a description, and duration.\n"
     "Output: A JSON block containing a 'keyframes' array. Each keyframe represents a waypoint in the animation.\n"
     "\n"
@@ -72,11 +73,11 @@ LLM2_PROMPT = (
     "- If use_hand is 'left': Output ONLY left_hand keys. OMIT right_hand keys (the right arm will freeze in place).\n"
     "- If use_hand is 'both': Output keys for both hands (both arms move to new targets).\n"
     "\n"
-    "PHYSICAL CONSTRAINTS (CRITICAL):\n"
-    "- The Origin (0.0, 0.0, 0.0) is located at the center of NAO's lower torso.\n"
-    "- X (Forward/Back): Max 0.25 meters. 0.0 is the lower torso.\n"
-    "- Y (Left/Right): Max 0.25 metres. 0.0 is the lower torso. Left hand side positive Y. Right hand side negative Y.\n"
-    "- Z (Up/Down): Min -0.05 metres. 0.0 is the lower torso. +0.15 is the upper chest. +0.25 is the face.\n"
+    "NORMALIZED SPATIAL CONSTRAINTS (CRITICAL):\n"
+    "- Do NOT output meters. You must output normalized float coordinates between -1.0 and 1.0.\n"
+    "- X (Forward/Back): 0.0 is the lower torso. 1.0 is maximum reach forward.\n"
+    "- Y (Left/Right): 0.0 is the center of the lower torso. +/- 1.0 is maximum reach outward. Left hand uses positive Y, Right hand uses negative Y.\n"
+    "- Z (Up/Down): -1.0 is resting at the waist. 0.0 is the center of the lower torso. 1.0 is the height of the face/head.\n"
     "- Orientations: MUST be one of ['palms_up', 'palms_down', 'palms_in', 'palms_out', 'palms_forward', 'palms_backward'].\n"
     "- Fingers: MUST be one of ['forward', 'backward', 'up', 'down', 'left', 'right'].\n"
     "\n"
@@ -87,8 +88,8 @@ LLM2_PROMPT = (
     "- If palm is 'in'/'out', fingers MUST be 'forward', 'backward', 'up', or 'down'.\n"
     "\n"
     "SPATIAL GUIDELINES:\n"
-    "- 'Stop': X=0.15, Z=0.05, orientation: 'palms_forward', fingers: 'up'.\n"
-    "- 'Welcome' or 'Present': X=0.05, active Y=+/- 0.1, Z=-0.05, orientation: 'palms_up', fingers: 'forward'.\n"
+    "- 'Stop': X=0.15, Z=0.5, orientation: 'palms_forward', fingers: 'up'.\n"
+    "- 'Welcome' or 'Present': X=0.05, active Y=+/- 0.1, Z=-1.0, orientation: 'palms_up', fingers: 'forward'.\n"
     "\n"
     "Example Output 1 (Single / Static Target):\n"
     "```json\n"
@@ -138,54 +139,17 @@ def generate_tts_and_duration(sentence, index):
     os.remove(filename)
     return encoded_audio, duration
 
-def get_dynamic_rotation(orientation_string, finger_string, is_left):
-    """
-    Dynamically constructs a 3x3 rotation matrix from finger and palm vectors.
-    """
-    # 1. Map Finger String to Global X-Axis Vector
-    finger_vectors = {
-        "forward": np.array([1.0, 0.0, 0.0]),
-        "backward": np.array([-1.0, 0.0, 0.0]),
-        "up": np.array([0.0, 0.0, 1.0]),
-        "down": np.array([0.0, 0.0, -1.0]),
-        "left": np.array([0.0, 1.0, 0.0]),
-        "right": np.array([0.0, -1.0, 0.0])
-    }
-    
-    # 2. Map Palm String to Global Z-Axis Vector (Back of the Hand)
-    back_of_hand_vectors = {
-        "palms_up": np.array([0.0, 0.0, -1.0]),       
-        "palms_down": np.array([0.0, 0.0, 1.0]),      
-        "palms_forward": np.array([-1.0, 0.0, 0.0]),  
-        "palms_backward": np.array([1.0, 0.0, 0.0])   
-    }
 
-    if is_left:
-        back_of_hand_vectors["palms_in"] = np.array([0.0, 1.0, 0.0])
-        back_of_hand_vectors["palms_out"] = np.array([0.0, -1.0, 0.0])
-    else:
-        back_of_hand_vectors["palms_in"] = np.array([0.0, -1.0, 0.0])
-        back_of_hand_vectors["palms_out"] = np.array([0.0, 1.0, 0.0])
 
-    X_axis = finger_vectors.get(finger_string, np.array([1.0, 0.0, 0.0]))
-    Z_axis = back_of_hand_vectors.get(orientation_string, back_of_hand_vectors["palms_in"])
-
-    if np.abs(np.dot(X_axis, Z_axis)) > 0.1:
-        if X_axis[2] == 0:  
-            Z_axis = np.array([0.0, 0.0, 1.0])
-        else:               
-            Z_axis = back_of_hand_vectors["palms_in"]
-
-    Y_axis = np.cross(Z_axis, X_axis)
-    rotation_matrix = np.column_stack((X_axis, Y_axis, Z_axis))
-    
-    return rotation_matrix
-
-def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt=0.04):
+def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", current_angles=None, dt=0.04):
     try:
-        # 1. Load Robot
-        urdf_filename = "nao_clean.urdf"
-        robot = pin.RobotWrapper.BuildFromURDF(urdf_filename)
+        # 1. Load Robot Profile
+        profile = ROBOT_PROFILES.get(active_robot)
+        if not profile:
+            raise ValueError(f"Robot profile '{active_robot}' not found.")
+        
+        pkg_dirs = profile.get("package_dirs", [])
+        robot = pin.RobotWrapper.BuildFromURDF(profile["urdf_path"], package_dirs=pkg_dirs)
         q_initial = robot.q0.copy()
 
         if current_angles:
@@ -198,43 +162,67 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
         q_initial = np.maximum(q_initial, robot.model.lowerPositionLimit)
         q_initial = np.minimum(q_initial, robot.model.upperPositionLimit)
 
-        # Artificially restrict the shoulder pitch to just below straight up (-1.5 radians).
-        # This allows full high-reach gestures but makes backward spinning mathematically impossible.
-        for joint_name in ["LShoulderPitch", "RShoulderPitch"]:
+        # 2. Dynamic Anti-Spin / Height Limits
+        pitch_joints = profile["limits"].get("pitch_joints", [])
+        pitch_max = profile["limits"].get("shoulder_pitch_max", -1.5)
+        
+        for joint_name in pitch_joints:
             if robot.model.existJointName(joint_name):
                 joint_id = robot.model.getJointId(joint_name)
                 idx_q = robot.model.joints[joint_id].idx_q
-                robot.model.lowerPositionLimit[idx_q] = max(robot.model.lowerPositionLimit[idx_q], -1.5)
+                robot.model.lowerPositionLimit[idx_q] = max(robot.model.lowerPositionLimit[idx_q], pitch_max)
 
         configuration = pink.Configuration(robot.model, robot.data, q_initial)
 
-        # 2. Extract Keyframes and Global Usage
+        # 3. Extract Keyframes and Global Usage
         keyframes = cartesian_target.get("keyframes", []) if cartesian_target else []
         keyframes = sorted(keyframes, key=lambda k: k.get("time_fraction", 1.0))
 
         global_use_left = any(kf.get("use_hand", "none") in ["left", "both"] for kf in keyframes)
         global_use_right = any(kf.get("use_hand", "none") in ["right", "both"] for kf in keyframes)
 
-        # 3. Define the Absolute Rest Pose (Arms down by sides)
-        REST_L_POS = np.array([0.0, 0.15, -0.1])
-        REST_R_POS = np.array([0.0, -0.15, -0.1])
-        REST_R_LEFT = get_dynamic_rotation("palms_in", "down", is_left=True)
-        REST_R_RIGHT = get_dynamic_rotation("palms_in", "down", is_left=False)
+        # 4. Define the Absolute Rest Pose from Profile
+        REST_L_POS = np.array(profile["rest_pose"]["left_pos"])
+        REST_R_POS = np.array(profile["rest_pose"]["right_pos"])
+        REST_R_LEFT = profile["get_orientation"]("palms_in", "down", is_left=True)
+        REST_R_RIGHT = profile["get_orientation"]("palms_in", "down", is_left=False)
 
-        # 4. Initialize Tasks (ALWAYS track both arms now)
+       # 5. Initialize Tasks
         tasks = []
-        posture_task = PostureTask(cost=0.01)
+        
+        # Weighted posture task to stiffen the 'stiff joints' defined in robot profiles.
+        nv = robot.model.nv
+        cost_vector = np.full(nv, 0.01)
+        
+        # Apply a massive cost penalty to the stiff joints
+        stiff_joints = profile.get("stiff_joints", [])
+        for joint_name in stiff_joints:
+            if robot.model.existJointName(joint_name):
+                joint_id = robot.model.getJointId(joint_name)
+                idx_v = robot.model.joints[joint_id].idx_v
+                nv_joint = robot.model.joints[joint_id].nv
+                
+                # Apply the heavy cost to all degrees of freedom for this joint to makes it 100x more "expensive" for the solver to move that joint.
+                cost_vector[idx_v : idx_v + nv_joint] = 1.0 
+                
+        # 3. Feed the custom cost array into the task
+        posture_task = PostureTask(cost=cost_vector)
         posture_task.set_target(q_initial)
         tasks.append(posture_task)
+        # ----------------------------------
 
-        initial_l_se3 = configuration.get_transform_frame_to_world("l_wrist")
-        initial_r_se3 = configuration.get_transform_frame_to_world("r_wrist")
+        initial_l_se3 = configuration.get_transform_frame_to_world(profile["end_effectors"]["left"])
+        initial_r_se3 = configuration.get_transform_frame_to_world(profile["end_effectors"]["right"])
 
         l_waypoints = [(0.0, initial_l_se3)]
         r_waypoints = [(0.0, initial_r_se3)]
 
-        l_wrist_task = FrameTask("l_wrist", position_cost=1.0, orientation_cost=0.1)
-        r_wrist_task = FrameTask("r_wrist", position_cost=1.0, orientation_cost=0.1)
+        # Debug helpers to track normalized inputs and their converted absolute positions
+        l_debug = [(0.0, None, initial_l_se3.translation.tolist())]
+        r_debug = [(0.0, None, initial_r_se3.translation.tolist())]
+
+        l_wrist_task = FrameTask(profile["end_effectors"]["left"], position_cost=1.0, orientation_cost=0.1)
+        r_wrist_task = FrameTask(profile["end_effectors"]["right"], position_cost=1.0, orientation_cost=0.1)
         tasks.append(l_wrist_task)
         tasks.append(r_wrist_task)
 
@@ -243,13 +231,26 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
             for kf in keyframes:
                 frac = kf.get("time_fraction", 1.0)
                 if kf.get("use_hand", "none") in ["left", "both"]:
-                    l_pos = np.array(kf.get("left_hand_pos", l_waypoints[-1][1].translation))
-                    R_left = get_dynamic_rotation(kf.get("left_orientation", "palms_in"), kf.get("left_fingers", "down"), True)
+                    # Check if normalized pos exists, otherwise use last known absolute position
+                    if "left_hand_pos" in kf:
+                        norm_pos = kf["left_hand_pos"]
+                        # Scaling Math: Normalized -> Absolute Meters
+                        abs_x = max(0.0, norm_pos[0]) * profile["scale"]["x_max"]
+                        abs_y = norm_pos[1] * profile["scale"]["y_max"]
+                        abs_z = ((norm_pos[2] + 1.0) / 2.0) * (profile["scale"]["z_head"] - profile["scale"]["z_waist"]) + profile["scale"]["z_waist"]
+                        l_pos = np.array([abs_x, abs_y, abs_z])
+                        l_debug.append((frac, list(norm_pos), l_pos.tolist()))
+                    else:
+                        l_pos = l_waypoints[-1][1].translation
+                        l_debug.append((frac, None, l_pos.tolist()))
+                        
+                    # Fetch hardware-specific orientation
+                    R_left = profile["get_orientation"](kf.get("left_orientation", "palms_in"), kf.get("left_fingers", "down"), is_left=True)
                     l_waypoints.append((frac, pin.SE3(R_left, l_pos)))
                 else:
                     l_waypoints.append((frac, l_waypoints[-1][1]))
         else:
-            # AUTO-REST: Arm is unused. Smoothly lower it to rest over 30% of the duration.
+            # AUTO-REST
             l_waypoints.append((0.3, pin.SE3(REST_R_LEFT, REST_L_POS)))
             l_waypoints.append((1.0, pin.SE3(REST_R_LEFT, REST_L_POS)))
 
@@ -258,8 +259,19 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
             for kf in keyframes:
                 frac = kf.get("time_fraction", 1.0)
                 if kf.get("use_hand", "none") in ["right", "both"]:
-                    r_pos = np.array(kf.get("right_hand_pos", r_waypoints[-1][1].translation))
-                    R_right = get_dynamic_rotation(kf.get("right_orientation", "palms_in"), kf.get("right_fingers", "down"), False)
+                    if "right_hand_pos" in kf:
+                        norm_pos = kf["right_hand_pos"]
+                        # Scaling Math: Normalized -> Absolute Meters
+                        abs_x = max(0.0, norm_pos[0]) * profile["scale"]["x_max"]
+                        abs_y = norm_pos[1] * profile["scale"]["y_max"]
+                        abs_z = ((norm_pos[2] + 1.0) / 2.0) * (profile["scale"]["z_head"] - profile["scale"]["z_waist"]) + profile["scale"]["z_waist"]
+                        r_pos = np.array([abs_x, abs_y, abs_z])
+                        r_debug.append((frac, list(norm_pos), r_pos.tolist()))
+                    else:
+                        r_pos = r_waypoints[-1][1].translation
+                        r_debug.append((frac, None, r_pos.tolist()))
+                        
+                    R_right = profile["get_orientation"](kf.get("right_orientation", "palms_in"), kf.get("right_fingers", "down"), is_left=False)
                     r_waypoints.append((frac, pin.SE3(R_right, r_pos)))
                 else:
                     r_waypoints.append((frac, r_waypoints[-1][1]))
@@ -279,10 +291,22 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
                     return pin.SE3.Interpolate(pose1, pose2, local_progress)
             return waypoints[-1][1]
 
-        # 5. Simulation Loop
+        # Print normalized -> absolute waypoint conversions for debugging
+        try:
+            print("\n[DEBUG] Left waypoints (time_fraction, normalized, absolute_meters):")
+            for entry in l_debug:
+                print(f"  {entry}")
+            print("[DEBUG] Right waypoints (time_fraction, normalized, absolute_meters):")
+            for entry in r_debug:
+                print(f"  {entry}")
+        except Exception as _e:
+            print(f"[DEBUG] Error printing waypoint debug info: {_e}")
+
+        # 6. Simulation Loop
         time_steps = np.arange(0, duration, dt)
         if len(time_steps) == 0: time_steps = [duration]
 
+        # Extract joints securely
         joint_names = [n for i, n in enumerate(robot.model.names) if i > 0 and "Thumb" not in n and "Finger" not in n]
         joint_indices = [robot.model.joints[i].idx_q for i in range(1, robot.model.njoints) if "Thumb" not in robot.model.names[i] and "Finger" not in robot.model.names[i]]
         
@@ -302,15 +326,13 @@ def generate_pink_trajectory(cartesian_target, duration, current_angles=None, dt
                 trajectory_angles[name].append(float(configuration.q[q_idx]))
                 trajectory_times[name].append(float(t + dt))
 
-        # 6. Full Output (Masking Removed)
-        # We now send all upper body joints so the physical robot knows how to lower its arms.
         return {"names": joint_names, "times": [trajectory_times[n] for n in joint_names], "angles": [trajectory_angles[n] for n in joint_names]}
         
     except Exception as e:
         print(f"PINK IK Error: {e}")
         return None
 
-def process_paragraph(paragraph, current_angles=None):
+def process_paragraph(paragraph, current_angles=None, active_robot="nao"):
     sentences = re.split(r'(?<=[.!?]) +', paragraph)
     payload = []
     
@@ -339,7 +361,7 @@ def process_paragraph(paragraph, current_angles=None):
             print(f"LLM 2 Cartesian: {cartesian_json}")
         
         # Generate the trajectory using the running state, not the start state
-        trajectory = generate_pink_trajectory(cartesian_json, duration, running_angles)
+        trajectory = generate_pink_trajectory(cartesian_json, duration, active_robot, running_angles)
         
         # CONTINUOUS STATE UPDATE:
         # Extract the very last frame of this trajectory and update our running tracker
@@ -385,10 +407,10 @@ def start_server():
                 print(f"Received physical state for {len(current_angles)} joints.")
             except json.JSONDecodeError:
                 print("Warning: Could not parse robot state, defaulting to URDF resting pose.")
-
-            text_to_process = input("Enter paragraph for NAO to execute: ")
+            active_robot = "nao"
+            text_to_process = input(f"Enter paragraph for {active_robot} to execute: ")
             
-            final_payload = process_paragraph(text_to_process, current_angles)
+            final_payload = process_paragraph(text_to_process, current_angles, active_robot)
             
             json_string = json.dumps(final_payload) + "<EOF>"
             conn.sendall(json_string.encode('utf-8'))
