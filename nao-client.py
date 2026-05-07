@@ -5,12 +5,13 @@ import os
 import tempfile 
 import time
 from naoqi import ALProxy
+import pygame
 
 # --- CONFIGURATION ---
 SERVER_IP = '127.0.0.1' # Change to the IP of your Python 3 machine
 SERVER_PORT = 65432
 ROBOT_IP = "127.0.0.1"  # Change to physical robot IP if not using simulator
-ROBOT_PORT = 60516
+ROBOT_PORT = 53800
 
 def connect_to_server(motion):
     try:
@@ -52,7 +53,13 @@ def connect_to_server(motion):
         return None
 
 def execute_payload(payload, motion, audio_player, memory, posture):
-    for item in payload:
+    """
+    Executes the payload. Currently toggled for Pygame local audio testing.
+    Retains audio_player argument for instant transition to physical hardware.
+    """
+    for i, item in enumerate(payload):
+        pygame.mixer.init()
+        
         sentence = item["sentence"]
         audio_b64 = item["audio_b64"]
         traj = item["trajectory"]
@@ -60,47 +67,62 @@ def execute_payload(payload, motion, audio_player, memory, posture):
         print("Executing:", sentence)
         
         # 1. Decode audio and save to local OS temp folder safely
-        audio_path = os.path.join(tempfile.gettempdir(), "current_sentence.mp3")
+        audio_filename = "sentence_{}.mp3".format(i)
+        audio_path = os.path.join(tempfile.gettempdir(), audio_filename)
         with open(audio_path, "wb") as f:
             f.write(base64.b64decode(audio_b64))
             
         # 2. Trigger Choregraphe Speech Bubble
         memory.raiseEvent("ALTextToSpeech/CurrentSentence", str(sentence))
         
-        if traj:
+        pygame.mixer.music.load(audio_path)
+        
+        if traj and traj.get("names") and len(traj["names"]) > 0:
             ascii_names = [str(name) for name in traj["names"]]
-            
-            # Note: The "prep pose" step was removed here. 
-            # Because of the Closed-Loop architecture, the first frame of the trajectory 
-            # is identical to the robot's current pose. It will transition seamlessly.
 
             # --- THE TIME DILATION FIX ---
-            # Stretch the timestamps by 5% to absorb quintic spline rounding errors
             safe_times = []
             for time_list in traj["times"]:
                 safe_times.append([(t * 1.05) + 0.35 for t in time_list])
             # -----------------------------
 
-            # 3. Start Audio (Non-blocking using 'post')
-            audio_task = audio_player.post.playFile(audio_path)
+            # 3. Start Audio (Non-blocking)
             
-            # 4. Execute Main Trajectory using the dilated times
+            # --- VIRTUAL TESTING TOGGLE ---
+            pygame.mixer.music.play() 
+            
+            # --- PHYSICAL HARDWARE TOGGLE ---
+            # audio_task = audio_player.post.playFile(audio_path)
+            
+            # 4. Execute Main Trajectory
             motion.angleInterpolation(ascii_names, traj["angles"], safe_times, True)
             
+        else:
+            # Fallback for empty trajectory
+            pygame.mixer.music.play()
+            # audio_task = audio_player.post.playFile(audio_path)
+            
         # Wait for audio to finish if motion ended slightly early
-        try:
-            audio_player.wait(audio_task, 0)
-        except:
-            pass
-        
+        # --- VIRTUAL TESTING TOGGLE ---
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(10)
+            
+        # --- PHYSICAL HARDWARE TOGGLE ---
+        # try:
+        #     audio_player.wait(audio_task, 0)
+        # except:
+        #     pass
+            
         # 5. Clear Speech Bubble and Cleanup
         memory.raiseEvent("ALTextToSpeech/CurrentSentence", "")
+        
+        pygame.mixer.quit()
+        
         try:
             os.remove(audio_path)
-        except:
+        except Exception as e:
             pass
 
-    # Return to neutral pose only after the ENTIRE paragraph is done
     print("Returning to neutral standing pose...")
     posture.goToPosture("Stand", 0.5)
 

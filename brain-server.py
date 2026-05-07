@@ -407,7 +407,7 @@ def start_server():
                 print(f"Received physical state for {len(current_angles)} joints.")
             except json.JSONDecodeError:
                 print("Warning: Could not parse robot state, defaulting to URDF resting pose.")
-            active_robot = "nao"
+            active_robot = "pepper"
             text_to_process = input(f"Enter paragraph for {active_robot} to execute: ")
             
             final_payload = process_paragraph(text_to_process, current_angles, active_robot)
