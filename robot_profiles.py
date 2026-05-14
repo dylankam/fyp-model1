@@ -70,13 +70,15 @@ def get_icub_orientation(orientation_string, finger_string, is_left):
         "right":    np.array([ 0.0,  1.0,  0.0]),
     }
 
-    # col2 = thumb direction. col1 (palm normal) = cross(thumb, finger).
-    # Setting thumb implicitly controls which way the palm faces.
-    thumb_vectors = {
-        "palms_forward":  np.array([ 0.0, -1.0,  0.0]),
-        "palms_backward": np.array([ 0.0,  1.0,  0.0]),
-        "palms_up":       np.array([-1.0,  0.0,  0.0]),
-        "palms_down":     np.array([ 0.0,  1.0,  0.0]),
+    # Store palm NORMAL (Y-axis = col1). Z (thumb) is derived as cross(X_finger, Y_palm).
+    # Storing Y instead of Z means palm direction stays consistent for ALL finger directions.
+    # Derived from confirmed empirical cases — same Y_axis regardless of finger direction.
+    # IK world: robot faces +X, left arm at +Y, right arm at -Y, up = +Z.
+    palm_normals = {
+        "palms_forward":  np.array([ 1.0,  0.0,  0.0]),  # confirmed
+        "palms_backward": np.array([-1.0,  0.0,  0.0]),  # confirmed
+        "palms_up":       np.array([ 0.0,  0.0, -1.0]),  # confirmed
+        "palms_down":     np.array([ 0.0,  0.0,  1.0]),  # confirmed
     }
 
     if is_left:
@@ -84,30 +86,25 @@ def get_icub_orientation(orientation_string, finger_string, is_left):
         finger_vectors["backward"] = np.array([ 1.0,  0.0,  0.0])
         finger_vectors["up"]       = np.array([ 0.0,  0.0,  1.0])
         finger_vectors["down"]     = np.array([ 0.0,  0.0, -1.0])
-        thumb_vectors["palms_forward"] = np.array([ 0.0,  1.0,  0.0])
-        thumb_vectors["palms_backward"] = np.array([ 0.0, -1.0,  0.0])
-        thumb_vectors["palms_up"]   = np.array([ 0.0,  -1.0,  0.0])  # confirmed working
-        thumb_vectors["palms_down"] = np.array([ 0.0,  1.0,  0.0])   # confirmed working
-        thumb_vectors["palms_in"]   = np.array([ 1.0,  0.0,  0.0])   # confirmed working
-        thumb_vectors["palms_out"]  = np.array([ 0.0, -1.0,  0.0])
+        palm_normals["palms_in"]  = np.array([ 0.0, -1.0,  0.0])  # confirmed
+        palm_normals["palms_out"] = np.array([ 0.0,  1.0,  0.0])
     else:
-        thumb_vectors["palms_up"]   = np.array([ 0.0, 1.0,  0.0])    # confirmed working
-        thumb_vectors["palms_down"] = np.array([ 0.0, -1.0,  0.0])   # confirmed working
-        thumb_vectors["palms_in"]   = np.array([ 1.0,  0.0,  0.0])   # confirmed working
-        thumb_vectors["palms_out"]  = np.array([ 0.0,  1.0,  0.0])
+        palm_normals["palms_in"]  = np.array([ 0.0,  1.0,  0.0])  # confirmed
+        palm_normals["palms_out"] = np.array([ 0.0, -1.0,  0.0])
 
     X_axis = finger_vectors.get(finger_string, finger_vectors["forward"])
-    Z_axis = thumb_vectors.get(orientation_string, thumb_vectors["palms_in"])
+    Y_axis = palm_normals.get(orientation_string, palm_normals["palms_in"])
 
-    # If finger and thumb are parallel, cross product is zero — pick an orthogonal fallback
-    if np.abs(np.dot(X_axis, Z_axis)) > 0.9:
-        # Try world axes until we find one not parallel to X_axis
+    # If palm normal is parallel to finger direction, pick an orthogonal fallback
+    if np.abs(np.dot(X_axis, Y_axis)) > 0.9:
         for candidate in [np.array([0,0,1.0]), np.array([0,1.0,0]), np.array([1.0,0,0])]:
             if np.abs(np.dot(X_axis, candidate)) < 0.9:
-                Z_axis = candidate
+                Y_axis = candidate
                 break
 
-    Y_axis = np.cross(Z_axis, X_axis)
+    Z_axis = np.cross(X_axis, Y_axis)
+    Z_axis = Z_axis / np.linalg.norm(Z_axis)
+    Y_axis = np.cross(Z_axis, X_axis)  # reorthogonalize
     Y_axis = Y_axis / np.linalg.norm(Y_axis)
     return np.column_stack((X_axis, Y_axis, Z_axis))
 
