@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from robot_descriptions import pepper_description
+from robot_descriptions import pepper_description, talos_description, icub_description
 
 # Robot specific functions to compute rotation matrices based on orientation and finger direction
 def get_nao_orientation(orientation_string, finger_string, is_left):
@@ -46,6 +46,72 @@ def get_nao_orientation(orientation_string, finger_string, is_left):
     
     return rotation_matrix
 
+
+def get_icub_orientation(orientation_string, finger_string, is_left):
+    """
+    Constructs a 3x3 rotation matrix for the iCub physical l_hand / r_hand body.
+
+    The robot faces world +X (pinocchio world frame).
+    Left arm at world -Y, right arm at world +Y, up = world +Z.
+    Forward = +X, backward = -X, left = -Y, right = +Y.
+
+    Used with end-effectors 'l_hand' and 'r_hand' (physical bodies, no DH offset).
+    The matrix columns represent the desired finger direction (col0), an
+    orthogonal in-plane axis (col1), and the back-of-hand direction (col2).
+    """
+    # Robot faces world +X. Left arm at world -Y, right arm at world +Y, up = +Z.
+    # forward=+X, backward=-X, left=-Y, right=+Y
+    finger_vectors = {
+        "forward":  np.array([ 1.0,  0.0,  0.0]),
+        "backward": np.array([-1.0,  0.0,  0.0]),
+        "up":       np.array([ 0.0,  0.0, -1.0]),
+        "down":     np.array([ 0.0,  0.0,  1.0]),
+        "left":     np.array([ 0.0, -1.0,  0.0]),
+        "right":    np.array([ 0.0,  1.0,  0.0]),
+    }
+
+    # col2 = thumb direction. col1 (palm normal) = cross(thumb, finger).
+    # Setting thumb implicitly controls which way the palm faces.
+    thumb_vectors = {
+        "palms_forward":  np.array([ 0.0, -1.0,  0.0]),
+        "palms_backward": np.array([ 0.0,  1.0,  0.0]),
+        "palms_up":       np.array([-1.0,  0.0,  0.0]),
+        "palms_down":     np.array([ 0.0,  1.0,  0.0]),
+    }
+
+    if is_left:
+        finger_vectors["forward"]  = np.array([-1.0,  0.0,  0.0])
+        finger_vectors["backward"] = np.array([ 1.0,  0.0,  0.0])
+        finger_vectors["up"]       = np.array([ 0.0,  0.0,  1.0])
+        finger_vectors["down"]     = np.array([ 0.0,  0.0, -1.0])
+        thumb_vectors["palms_forward"] = np.array([ 0.0,  1.0,  0.0])
+        thumb_vectors["palms_backward"] = np.array([ 0.0, -1.0,  0.0])
+        thumb_vectors["palms_up"]   = np.array([ 0.0,  -1.0,  0.0])  # confirmed working
+        thumb_vectors["palms_down"] = np.array([ 0.0,  1.0,  0.0])   # confirmed working
+        thumb_vectors["palms_in"]   = np.array([ 1.0,  0.0,  0.0])   # confirmed working
+        thumb_vectors["palms_out"]  = np.array([ 0.0, -1.0,  0.0])
+    else:
+        thumb_vectors["palms_up"]   = np.array([ 0.0, 1.0,  0.0])    # confirmed working
+        thumb_vectors["palms_down"] = np.array([ 0.0, -1.0,  0.0])   # confirmed working
+        thumb_vectors["palms_in"]   = np.array([ 1.0,  0.0,  0.0])   # confirmed working
+        thumb_vectors["palms_out"]  = np.array([ 0.0,  1.0,  0.0])
+
+    X_axis = finger_vectors.get(finger_string, finger_vectors["forward"])
+    Z_axis = thumb_vectors.get(orientation_string, thumb_vectors["palms_in"])
+
+    # If finger and thumb are parallel, cross product is zero — pick an orthogonal fallback
+    if np.abs(np.dot(X_axis, Z_axis)) > 0.9:
+        # Try world axes until we find one not parallel to X_axis
+        for candidate in [np.array([0,0,1.0]), np.array([0,1.0,0]), np.array([1.0,0,0])]:
+            if np.abs(np.dot(X_axis, candidate)) < 0.9:
+                Z_axis = candidate
+                break
+
+    Y_axis = np.cross(Z_axis, X_axis)
+    Y_axis = Y_axis / np.linalg.norm(Y_axis)
+    return np.column_stack((X_axis, Y_axis, Z_axis))
+
+   
 # Define profiles for each robot
 ROBOT_PROFILES = {
     "nao": {
@@ -68,6 +134,7 @@ ROBOT_PROFILES = {
             "z_head": 0.25,  
             "z_waist": -0.05 
         },
+        "axis_inversion": {"x": 1.0, "y": 1.0, "z": 1.0},
         "get_orientation": get_nao_orientation
     },
     "pepper": {
@@ -94,6 +161,45 @@ ROBOT_PROFILES = {
             "z_head": 1.15,  
             "z_waist": 0.60
         },
+        "axis_inversion": {"x": 1.0, "y": 1.0, "z": 1.0},
         "get_orientation": get_nao_orientation
+    },
+    "icub": {
+        "urdf_path": icub_description.URDF_PATH,
+        "package_dirs": [os.path.dirname(icub_description.PACKAGE_PATH)],
+        "end_effectors": {
+            "left": "l_hand",
+            "right": "r_hand"
+        },
+        "rest_pose": {
+            "left_pos": [-0.048, -0.090, -0.126],
+            "right_pos": [-0.048,  0.090, -0.126]
+        },
+        "limits": {
+            "pitch_joints": ["l_shoulder_pitch", "r_shoulder_pitch"],
+            "shoulder_pitch_max": -1.5
+        },
+        "stiff_joints": [
+            "l_hip_pitch", "r_hip_pitch", "l_hip_roll", "r_hip_roll",
+            "torso_yaw", "torso_roll", "torso_pitch"
+        ],
+        "fingers": [
+            "l_hand_finger", "l_thumb_oppose", "l_thumb_proximal", "l_thumb_distal",
+            "l_index_proximal", "l_index_distal", "l_middle_proximal", "l_middle_distal",
+            "l_ring_pinky",
+            "r_hand_finger", "r_thumb_oppose", "r_thumb_proximal", "r_thumb_distal",
+            "r_index_proximal", "r_index_distal", "r_middle_proximal", "r_middle_distal",
+            "r_ring_pinky"
+        ],
+        "scale": {
+            "x_max": 0.40,
+            "y_max": 0.40,
+            "z_head": 0.37,
+            "z_waist": -0.10
+        },
+        "axis_inversion": {"x": 1.0, "y": -1.0, "z": 1.0},
+        "get_orientation": get_icub_orientation
     }
 }
+
+

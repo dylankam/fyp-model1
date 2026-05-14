@@ -1,4 +1,4 @@
-import socket
+import requests
 import json
 import base64
 import os
@@ -8,48 +8,27 @@ from naoqi import ALProxy
 import pygame
 
 # --- CONFIGURATION ---
-SERVER_IP = '127.0.0.1' # Change to the IP of your Python 3 machine
-SERVER_PORT = 65432
+SERVER_URL = 'http://127.0.0.1:65432/process'  # Change IP to the Brain Server machine if remote
 ROBOT_IP = "127.0.0.1"  # Change to physical robot IP if not using simulator
-ROBOT_PORT = 53800
+ROBOT_PORT = 58811
 
-def connect_to_server(motion):
+def connect_to_server(motion, text):
     try:
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.connect((SERVER_IP, SERVER_PORT))
-        
         # 1. READ PHYSICAL REALITY
-        # Get all joint names and their current angles in radians
         joint_names = motion.getBodyNames("Body")
         joint_angles = motion.getAngles("Body", True)
-        
-        # Zip them into a dictionary { "LShoulderPitch": 1.52, ... }
         current_state_dict = dict(zip(joint_names, joint_angles))
-        
-        # 2. PACKAGE AND SEND
-        request_payload = {
-            "status": "ready",
+
+        # 2. SEND via HTTP POST
+        response = requests.post(SERVER_URL, json={
+            "text": text,
+            "robot": "nao",
             "angles": current_state_dict
-        }
-        
-        # Send the state to the Brain Server as JSON
-        client_socket.sendall(json.dumps(request_payload))
-        
-        # 3. Receive the data chunks until the delimiter
-        buffer_string = ""
-        while True:
-            chunk = client_socket.recv(4096)
-            if not chunk:
-                break
-            buffer_string += chunk
-            if "<EOF>" in buffer_string:
-                buffer_string = buffer_string.replace("<EOF>", "")
-                break
-                
-        client_socket.close()
-        return json.loads(buffer_string)
+        }, timeout=300)
+        response.raise_for_status()
+        return response.json()
     except Exception as e:
-        print("Socket Error:", e)
+        print("Request Error:", e)
         return None
 
 def execute_payload(payload, motion, audio_player, memory, posture):
@@ -67,8 +46,8 @@ def execute_payload(payload, motion, audio_player, memory, posture):
         print("Executing:", sentence)
         
         # 1. Decode audio and save to local OS temp folder safely
-        audio_filename = "sentence_{}.mp3".format(i)
-        audio_path = os.path.join(tempfile.gettempdir(), audio_filename)
+        timestamp = int(time.time())
+        audio_path = os.path.join(tempfile.gettempdir(), "nao_sent_{}_{}.mp3".format(i, timestamp))
         with open(audio_path, "wb") as f:
             f.write(base64.b64decode(audio_b64))
             
@@ -144,9 +123,13 @@ if __name__ == "__main__":
     
     # Wrap the execution in an infinite loop
     while True:
+        text_to_speak = raw_input("\nEnter text for NAO to speak (or Ctrl+C to quit): ").strip()
+        if not text_to_speak:
+            continue
+
         print("\nConnecting to Brain Server...")
-        # Pass motion into the server connection so it can read the body state
-        payload = connect_to_server(motion)
+        # Pass motion and text into the server connection
+        payload = connect_to_server(motion, text_to_speak)
         
         if payload:
             print("Payload received. Beginning execution.")

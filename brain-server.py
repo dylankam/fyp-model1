@@ -1,4 +1,4 @@
-import socket
+from flask import Flask, request, jsonify
 import json
 import os
 import re
@@ -16,12 +16,13 @@ import time
 from robot_profiles import ROBOT_PROFILES
 
 # --- CONFIGURATION ---
-HOST = '0.0.0.0'
 PORT = 65432
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 print("Gemini Client Initialized:", "Yes" if client else "No")
+
+app = Flask(__name__)
 
 LLM1_PROMPT = (
     "You are the linguistic intent analyzer for a humanoid robot.\n"
@@ -149,6 +150,8 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
             raise ValueError(f"Robot profile '{active_robot}' not found.")
         
         pkg_dirs = profile.get("package_dirs", [])
+        # Fetch axis inversion multipliers; default to identity (no inversion)
+        axis_inv = profile.get("axis_inversion", {"x": 1.0, "y": 1.0, "z": 1.0})
         robot = pin.RobotWrapper.BuildFromURDF(profile["urdf_path"], package_dirs=pkg_dirs)
         q_initial = robot.q0.copy()
 
@@ -217,12 +220,9 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
         l_waypoints = [(0.0, initial_l_se3)]
         r_waypoints = [(0.0, initial_r_se3)]
 
-        # Debug helpers to track normalized inputs and their converted absolute positions
-        l_debug = [(0.0, None, initial_l_se3.translation.tolist())]
-        r_debug = [(0.0, None, initial_r_se3.translation.tolist())]
-
-        l_wrist_task = FrameTask(profile["end_effectors"]["left"], position_cost=1.0, orientation_cost=0.1)
-        r_wrist_task = FrameTask(profile["end_effectors"]["right"], position_cost=1.0, orientation_cost=0.1)
+        orient_cost = profile.get("orientation_cost", 0.1)
+        l_wrist_task = FrameTask(profile["end_effectors"]["left"], position_cost=1.0, orientation_cost=orient_cost)
+        r_wrist_task = FrameTask(profile["end_effectors"]["right"], position_cost=1.0, orientation_cost=orient_cost)
         tasks.append(l_wrist_task)
         tasks.append(r_wrist_task)
 
@@ -238,14 +238,14 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
                         abs_x = max(0.0, norm_pos[0]) * profile["scale"]["x_max"]
                         abs_y = norm_pos[1] * profile["scale"]["y_max"]
                         abs_z = ((norm_pos[2] + 1.0) / 2.0) * (profile["scale"]["z_head"] - profile["scale"]["z_waist"]) + profile["scale"]["z_waist"]
-                        l_pos = np.array([abs_x, abs_y, abs_z])
-                        l_debug.append((frac, list(norm_pos), l_pos.tolist()))
+                        l_pos = np.array([abs_x * axis_inv["x"], abs_y * axis_inv["y"], abs_z * axis_inv["z"]])
                     else:
                         l_pos = l_waypoints[-1][1].translation
-                        l_debug.append((frac, None, l_pos.tolist()))
                         
                     # Fetch hardware-specific orientation
-                    R_left = profile["get_orientation"](kf.get("left_orientation", "palms_in"), kf.get("left_fingers", "down"), is_left=True)
+                    l_orient = kf.get("left_orientation", "palms_in")
+                    l_fingers = kf.get("left_fingers", "down")
+                    R_left = profile["get_orientation"](l_orient, l_fingers, is_left=True)
                     l_waypoints.append((frac, pin.SE3(R_left, l_pos)))
                 else:
                     l_waypoints.append((frac, l_waypoints[-1][1]))
@@ -265,13 +265,13 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
                         abs_x = max(0.0, norm_pos[0]) * profile["scale"]["x_max"]
                         abs_y = norm_pos[1] * profile["scale"]["y_max"]
                         abs_z = ((norm_pos[2] + 1.0) / 2.0) * (profile["scale"]["z_head"] - profile["scale"]["z_waist"]) + profile["scale"]["z_waist"]
-                        r_pos = np.array([abs_x, abs_y, abs_z])
-                        r_debug.append((frac, list(norm_pos), r_pos.tolist()))
+                        r_pos = np.array([abs_x * axis_inv["x"], abs_y * axis_inv["y"], abs_z * axis_inv["z"]])
                     else:
                         r_pos = r_waypoints[-1][1].translation
-                        r_debug.append((frac, None, r_pos.tolist()))
                         
-                    R_right = profile["get_orientation"](kf.get("right_orientation", "palms_in"), kf.get("right_fingers", "down"), is_left=False)
+                    r_orient = kf.get("right_orientation", "palms_in")
+                    r_fingers = kf.get("right_fingers", "down")
+                    R_right = profile["get_orientation"](r_orient, r_fingers, is_left=False)
                     r_waypoints.append((frac, pin.SE3(R_right, r_pos)))
                 else:
                     r_waypoints.append((frac, r_waypoints[-1][1]))
@@ -290,17 +290,6 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
                     local_progress = (progress - t1) / (t2 - t1) if (t2 - t1) > 0 else 1.0
                     return pin.SE3.Interpolate(pose1, pose2, local_progress)
             return waypoints[-1][1]
-
-        # Print normalized -> absolute waypoint conversions for debugging
-        try:
-            print("\n[DEBUG] Left waypoints (time_fraction, normalized, absolute_meters):")
-            for entry in l_debug:
-                print(f"  {entry}")
-            print("[DEBUG] Right waypoints (time_fraction, normalized, absolute_meters):")
-            for entry in r_debug:
-                print(f"  {entry}")
-        except Exception as _e:
-            print(f"[DEBUG] Error printing waypoint debug info: {_e}")
 
         # 6. Simulation Loop
         time_steps = np.arange(0, duration, dt)
@@ -379,48 +368,25 @@ def process_paragraph(paragraph, current_angles=None, active_robot="nao"):
         
     return payload
 
-def start_server():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Add SO_REUSEADDR so rapid server restarts don't trigger "Address already in use"
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((HOST, PORT))
-    server_socket.listen(1)
-    print(f"BRAIN SERVER: Listening on {HOST}:{PORT}...")
+@app.route('/process', methods=['POST'])
+def process_route():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No JSON body received"}), 400
 
-    while True:
-        try:
-            print("\n[Waiting for Robot to connect and report state...]")
-            conn, addr = server_socket.accept()
-            print(f"Connected to Robot at {addr}")
-            
-            # Increased buffer size to cleanly receive the entire physical state JSON
-            data = conn.recv(4096).decode('utf-8')
-            if not data: 
-                conn.close()
-                continue
-                
-            # Parse the robot's physical joint angles
-            current_angles = {}
-            try:
-                robot_state = json.loads(data)
-                current_angles = robot_state.get("angles", {})
-                print(f"Received physical state for {len(current_angles)} joints.")
-            except json.JSONDecodeError:
-                print("Warning: Could not parse robot state, defaulting to URDF resting pose.")
-            active_robot = "pepper"
-            text_to_process = input(f"Enter paragraph for {active_robot} to execute: ")
-            
-            final_payload = process_paragraph(text_to_process, current_angles, active_robot)
-            
-            json_string = json.dumps(final_payload) + "<EOF>"
-            conn.sendall(json_string.encode('utf-8'))
-            print("Data sent to robot.")
-            conn.close()
-        except KeyboardInterrupt:
-            print("\nShutting down server.")
-            break
-        except Exception as e:
-            print(f"Server Error: {e}")
+    text = data.get("text", "").strip()
+    active_robot = data.get("robot", "nao")
+    current_angles = data.get("angles", {})
+
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+
+    print(f"\n[REQUEST] Robot: {active_robot} | Text: {text}")
+    print(f"Received physical state for {len(current_angles)} joints.")
+
+    final_payload = process_paragraph(text, current_angles, active_robot)
+    return jsonify(final_payload)
 
 if __name__ == "__main__":
-    start_server()
+    print(f"BRAIN SERVER: Starting on port {PORT}...")
+    app.run(host='0.0.0.0', port=PORT, debug=False)
