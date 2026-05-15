@@ -67,6 +67,7 @@ LLM2_PROMPT = (
     "- You MUST output a list of 1 or more keyframes inside a 'keyframes' array.\n"
     "- Only include more than 1 keyframe if the description implies a clear sequential action (e.g., 'first', 'then', 'afterwards').\n"
     "- Each keyframe MUST have a 'time_fraction' (a float between 0.1 and 1.0) indicating when in the audio this pose is reached.\n"
+    "- TIMING (CRITICAL): Humans gesture quickly then hold. For a static pose, use low time_fraction to reach the target fast, then add a second keyframe at time_fraction=1.0 with the SAME position to hold it. Do NOT use time_fraction=1.0 as the only keyframe for a static gesture.\n"
     "- TIMING & INTERPOLATION (CRITICAL): The robot moves sequentially. Movement toward Keyframe 2 only begins exactly when Keyframe 1's time_fraction is reached.\n"
     "- ANCHORING (HOLDING POSES): If a hand is NOT included in a keyframe, it will completely FREEZE and hold its last known position up to that time_fraction.\n"
     "- 'use_hand' dictates which hands are given new target coordinates at this specific moment.\n"
@@ -84,8 +85,6 @@ LLM2_PROMPT = (
     "\n"
     "PHYSICAL ARM LIMITS:\n"
     "- The IK solver is independent per arm and cannot avoid inter-arm collisions. Keep arms well separated.\n"
-    "- Each hand must stay on its own side with sufficient clearance: left hand Y >= +0.205, right hand Y <= -0.205.\n"
-    "- Only exceed these limits when intentionally crossing (e.g., right hand touching left shoulder).\n"
     "\n"
     "ORTHOGONALITY RULE (ANATOMY LIMITS):\n"
     "Palms and fingers CANNOT point along the same axis. They must be 90 degrees apart.\n"
@@ -100,6 +99,7 @@ LLM2_PROMPT = (
     "Example Output 1 (Single / Static Target):\n"
     "```json\n"
     '{"keyframes": [\n'
+    '  {"time_fraction": 0.3, "use_hand": "right", "right_hand_pos": [0.15, -0.07, 0.05], "right_orientation": "palms_forward", "right_fingers": "up"},\n'
     '  {"time_fraction": 1.0, "use_hand": "right", "right_hand_pos": [0.15, -0.07, 0.05], "right_orientation": "palms_forward", "right_fingers": "up"}\n'
     '], "duration": 1.6}\n'
     "```\n"
