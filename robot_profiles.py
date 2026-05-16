@@ -49,64 +49,76 @@ def get_nao_orientation(orientation_string, finger_string, is_left):
 
 def get_icub_orientation(orientation_string, finger_string, is_left):
     """
-    Constructs a 3x3 rotation matrix for the iCub physical l_hand / r_hand body.
-
-    The robot faces world +X (pinocchio world frame).
-    Left arm at world -Y, right arm at world +Y, up = world +Z.
-    Forward = +X, backward = -X, left = -Y, right = +Y.
-
-    Used with end-effectors 'l_hand' and 'r_hand' (physical bodies, no DH offset).
-    The matrix columns represent the desired finger direction (col0), an
-    orthogonal in-plane axis (col1), and the back-of-hand direction (col2).
+    Constructs a 3x3 rotation matrix for the iCub end-effector.
+    Anchors on the Back of Hand (Y) and Thumb (Z) to bypass URDF X-axis mirroring.
+    Tailored to MuJoCo's Global Frame (+X=Back, +Y=Right, +Z=Up).
     """
-    # Robot faces world +X. Left arm at world -Y, right arm at world +Y, up = +Z.
-    # forward=+X, backward=-X, left=-Y, right=+Y
+    # 1. GLOBAL TARGET VECTORS (MuJoCo Reality)
     finger_vectors = {
-        "forward":  np.array([ 1.0,  0.0,  0.0]),
-        "backward": np.array([-1.0,  0.0,  0.0]),
-        "up":       np.array([ 0.0,  0.0, -1.0]),
-        "down":     np.array([ 0.0,  0.0,  1.0]),
-        "left":     np.array([ 0.0, -1.0,  0.0]),
-        "right":    np.array([ 0.0,  1.0,  0.0]),
+        "forward": np.array([-1.0, 0.0, 0.0]),  # -X is Forward
+        "backward": np.array([1.0, 0.0, 0.0]),  # +X is Backward
+        "up": np.array([0.0, 0.0, 1.0]),        # +Z is Up
+        "down": np.array([0.0, 0.0, -1.0]),     # -Z is Down
+        "left": np.array([0.0, -1.0, 0.0]),     # -Y is Left
+        "right": np.array([0.0, 1.0, 0.0])      # +Y is Right
     }
-
-    # Store palm NORMAL (Y-axis = col1). Z (thumb) is derived as cross(X_finger, Y_palm).
-    # Storing Y instead of Z means palm direction stays consistent for ALL finger directions.
-    # Derived from confirmed empirical cases — same Y_axis regardless of finger direction.
-    # IK world: robot faces +X, left arm at +Y, right arm at -Y, up = +Z.
-    palm_normals = {
-        "palms_forward":  np.array([ 1.0,  0.0,  0.0]),  # confirmed
-        "palms_backward": np.array([-1.0,  0.0,  0.0]),  # confirmed
-        "palms_up":       np.array([ 0.0,  0.0, -1.0]),  # confirmed
-        "palms_down":     np.array([ 0.0,  0.0,  1.0]),  # confirmed
+    
+    back_of_hand_vectors = {
+        "palms_up": np.array([0.0, 0.0, -1.0]),       # Palm up = BoH down
+        "palms_down": np.array([0.0, 0.0, 1.0]),      # Palm down = BoH up
+        "palms_forward": np.array([1.0, 0.0, 0.0]),   # Palm fwd = BoH backward (+X)
+        "palms_backward": np.array([-1.0, 0.0, 0.0])  # Palm back = BoH forward (-X)
     }
 
     if is_left:
-        finger_vectors["forward"]  = np.array([-1.0,  0.0,  0.0])
-        finger_vectors["backward"] = np.array([ 1.0,  0.0,  0.0])
-        finger_vectors["up"]       = np.array([ 0.0,  0.0,  1.0])
-        finger_vectors["down"]     = np.array([ 0.0,  0.0, -1.0])
-        palm_normals["palms_in"]  = np.array([ 0.0, -1.0,  0.0])  # confirmed
-        palm_normals["palms_out"] = np.array([ 0.0,  1.0,  0.0])
+        back_of_hand_vectors["palms_in"] = np.array([0.0, -1.0, 0.0]) # BoH points Left (-Y) 
+        back_of_hand_vectors["palms_out"] = np.array([0.0, 1.0, 0.0]) # BoH points Right (+Y)
     else:
-        palm_normals["palms_in"]  = np.array([ 0.0,  1.0,  0.0])  # confirmed
-        palm_normals["palms_out"] = np.array([ 0.0, -1.0,  0.0])
+        back_of_hand_vectors["palms_in"] = np.array([0.0, 1.0, 0.0])  # BoH points Right (+Y) #
+        back_of_hand_vectors["palms_out"] = np.array([0.0, -1.0, 0.0])  # BoH points Left (-Y)
 
-    X_axis = finger_vectors.get(finger_string, finger_vectors["forward"])
-    Y_axis = palm_normals.get(orientation_string, palm_normals["palms_in"])
+    # Fetch primary targets
+    t_fingers = finger_vectors.get(finger_string, np.array([-1.0, 0.0, 0.0]))
+    t_boh = back_of_hand_vectors.get(orientation_string, back_of_hand_vectors["palms_in"])
 
-    # If palm normal is parallel to finger direction, pick an orthogonal fallback
-    if np.abs(np.dot(X_axis, Y_axis)) > 0.9:
-        for candidate in [np.array([0,0,1.0]), np.array([0,1.0,0]), np.array([1.0,0,0])]:
-            if np.abs(np.dot(X_axis, candidate)) < 0.9:
-                Y_axis = candidate
-                break
+    # Singularity Check
+    if np.abs(np.dot(t_fingers, t_boh)) > 0.1:
+        if t_fingers[2] == 0:  
+            t_boh = np.array([0.0, 0.0, 1.0])  
+        else:                       
+            t_boh = back_of_hand_vectors["palms_in"] 
 
-    Z_axis = np.cross(X_axis, Y_axis)
-    Z_axis = Z_axis / np.linalg.norm(Z_axis)
-    Y_axis = np.cross(Z_axis, X_axis)  # reorthogonalize
-    Y_axis = Y_axis / np.linalg.norm(Y_axis)
-    return np.column_stack((X_axis, Y_axis, Z_axis))
+    # ---------------------------------------------------------
+    # 2. CALCULATE THE THUMB VECTOR (The new anchor)
+    # ---------------------------------------------------------
+    # The physical thumb direction depends on handedness. 
+    # Right Hand: Thumb is Cross(Back of Hand, Fingers)
+    # Left Hand: Thumb is Cross(Fingers, Back of Hand)
+    if is_left:
+        t_thumb = np.cross(t_fingers, t_boh)
+    else:
+        t_thumb = np.cross(t_boh, t_fingers)
+
+    # ---------------------------------------------------------
+    # 3. THE PERMUTATION MAP (Anchored on Y and Z)
+    # ---------------------------------------------------------
+    # Based on your observation: Y = Back of Palm, Z = Thumb
+    col_y = t_boh
+    col_z = t_thumb
+    
+    # Calculate X (the normal/fingers) dynamically. 
+    # This automatically absorbs the left/right hardware inversion!
+    col_x = np.cross(col_y, col_z)
+
+    # Build the 3x3 Matrix
+    rotation_matrix = np.column_stack((col_x, col_y, col_z))
+    
+    # SAFETY: Determinant Check to prevent IK spazzing
+    if np.linalg.det(rotation_matrix) < 0:
+        col_x = -col_x 
+        rotation_matrix = np.column_stack((col_x, col_y, col_z))
+        
+    return rotation_matrix
 
    
 # Define profiles for each robot
@@ -153,8 +165,8 @@ ROBOT_PROFILES = {
             "HipRoll", "HipPitch", "KneePitch",
         ],
         "scale": {
-            "x_max": 0.45,   
-            "y_max": 0.40,   
+            "x_max": 0.55,   
+            "y_max": 0.55,   
             "z_head": 1.15,  
             "z_waist": 0.60
         },
@@ -194,7 +206,7 @@ ROBOT_PROFILES = {
             "z_head": 0.37,
             "z_waist": -0.10
         },
-        "axis_inversion": {"x": 1.0, "y": -1.0, "z": 1.0},
+        "axis_inversion": {"x": -1.0, "y": -1.0, "z": 1.0},
         "get_orientation": get_icub_orientation
     }
 }
