@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from robot_descriptions import pepper_description, talos_description, icub_description
+from robot_descriptions import pepper_description, icub_description, valkyrie_description
 
 # Robot specific functions to compute rotation matrices based on orientation and finger direction
 def get_nao_orientation(orientation_string, finger_string, is_left):
@@ -120,8 +120,58 @@ def get_icub_orientation(orientation_string, finger_string, is_left):
         
     return rotation_matrix
 
-   
-# Define profiles for each robot
+
+
+def get_valkyrie_orientation(orientation_string, finger_string, is_left):
+    """
+    Orientation function for NASA Valkyrie.
+    TODO: Run generate_mapping.py with valkyrie_description to fill in the
+    permutation map below after visual calibration.
+    """
+    # 1. GLOBAL TARGET VECTORS (MuJoCo: +X=forward, +Y=left, +Z=up — confirm with generate_mapping)
+    finger_vectors = {
+        "forward": np.array([1.0, 0.0, 0.0]),
+        "backward": np.array([-1.0, 0.0, 0.0]),
+        "up": np.array([0.0, 0.0, 1.0]),
+        "down": np.array([0.0, 0.0, -1.0]),
+        "left": np.array([0.0, 1.0, 0.0]),
+        "right": np.array([0.0, -1.0, 0.0])
+    }
+    back_of_hand_vectors = {
+        "palms_up": np.array([0.0, 0.0, -1.0]),
+        "palms_down": np.array([0.0, 0.0, 1.0]),
+        "palms_forward": np.array([-1.0, 0.0, 0.0]),
+        "palms_backward": np.array([1.0, 0.0, 0.0])
+    }
+    if is_left:
+        back_of_hand_vectors["palms_in"] = np.array([0.0, -1.0, 0.0])
+        back_of_hand_vectors["palms_out"] = np.array([0.0, 1.0, 0.0])
+    else:
+        back_of_hand_vectors["palms_in"] = np.array([0.0, 1.0, 0.0])
+        back_of_hand_vectors["palms_out"] = np.array([0.0, -1.0, 0.0])
+
+    t_fingers = finger_vectors.get(finger_string, finger_vectors["forward"])
+    t_boh = back_of_hand_vectors.get(orientation_string, back_of_hand_vectors["palms_in"])
+
+    if np.abs(np.dot(t_fingers, t_boh)) > 0.1:
+        if t_fingers[2] == 0:
+            t_boh = np.array([0.0, 0.0, 1.0])
+        else:
+            t_boh = back_of_hand_vectors["palms_in"]
+
+    # TODO: Replace col_y/col_z assignments after running generate_mapping calibration
+    col_y = t_boh
+    col_z = np.cross(t_fingers, t_boh) if is_left else np.cross(t_boh, t_fingers)
+    col_x = np.cross(col_y, col_z)
+
+    rotation_matrix = np.column_stack((col_x, col_y, col_z))
+    if np.linalg.det(rotation_matrix) < 0:
+        col_x = -col_x
+        rotation_matrix = np.column_stack((col_x, col_y, col_z))
+    return rotation_matrix
+
+
+
 ROBOT_PROFILES = {
     "nao": {
         "urdf_path": "nao_clean.urdf",
@@ -166,6 +216,7 @@ ROBOT_PROFILES = {
         ],
         "scale": {
             "x_max": 0.55,   
+
             "y_max": 0.55,   
             "z_head": 1.15,  
             "z_waist": 0.60
@@ -208,6 +259,34 @@ ROBOT_PROFILES = {
         },
         "axis_inversion": {"x": -1.0, "y": -1.0, "z": 1.0},
         "get_orientation": get_icub_orientation
+    },
+    "valkyrie": {
+        "urdf_path": valkyrie_description.URDF_PATH,
+        "package_dirs": [os.path.dirname(valkyrie_description.PACKAGE_PATH)],
+        "end_effectors": {
+            "left": "leftPalm",
+            "right": "rightPalm"
+        },
+        "rest_pose": {
+            "left_pos": [0.0, 0.30, 0.0],
+            "right_pos": [0.0, -0.30, 0.0]
+        },
+        "limits": {
+            "pitch_joints": ["leftShoulderPitch", "rightShoulderPitch"],
+            "shoulder_pitch_max": -1.5
+        },
+        "stiff_joints": [
+            "leftHipPitch", "rightHipPitch", "leftHipRoll", "rightHipRoll",
+            "leftKneePitch", "rightKneePitch", "torsoYaw", "torsoPitch", "torsoRoll"
+        ],
+        "scale": {
+            "x_max": 0.55,
+            "y_max": 0.55,
+            "z_head": 1.20,
+            "z_waist": 0.0
+        },
+        "axis_inversion": {"x": 1.0, "y": 1.0, "z": 1.0},
+        "get_orientation": get_valkyrie_orientation
     }
 }
 
