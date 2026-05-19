@@ -336,6 +336,18 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
                 trajectory_angles[name].append(float(configuration.q[q_idx]))
                 trajectory_times[name].append(float(t + dt))
 
+        # Smooth each joint's angle trajectory to remove IK solver micro-oscillations.
+        # Uses a causal moving average so the end (held pose) is preserved accurately.
+        smooth_window = max(1, int(0.12 / dt))  # ~3 frames at dt=0.04
+        for name in joint_names:
+            angles = np.array(trajectory_angles[name])
+            if len(angles) > smooth_window:
+                kernel = np.ones(smooth_window) / smooth_window
+                smoothed = np.convolve(angles, kernel, mode='full')[:len(angles)]
+                # The first (smooth_window-1) frames are under-averaged; blend them back
+                smoothed[:smooth_window - 1] = angles[:smooth_window - 1]
+                trajectory_angles[name] = smoothed.tolist()
+
         return {"names": joint_names, "times": [trajectory_times[n] for n in joint_names], "angles": [trajectory_angles[n] for n in joint_names]}
         
     except Exception as e:
