@@ -32,17 +32,25 @@ LLM1_PROMPT = (
     "HARDWARE CONSTRAINTS:\n"
     "- The robot has simple mitten-like grippers. Do not describe individual finger movements (e.g., pointing with an index finger, making a fist). Describe the hand and wrist as a single unit.\n"
     "\n"
+    "PALM DIRECTION REFERENCE (if you mention a palm direction, use one of these exact terms):\n"
+    "- 'palms forward'  = palm faces the direction the robot is looking (away from chest). E.g. stop, high-five.\n"
+    "- 'palms backward' = palm faces the robot's own chest. E.g. beckoning inward.\n"
+    "- 'palms up'       = palm faces the ceiling. E.g. offering, shrugging.\n"
+    "- 'palms down'     = palm faces the floor. E.g. calming, pressing down.\n"
+    "- 'palms in'       = palm faces the body midline (palms face each other). E.g. neutral rest.\n"
+    "- 'palms out'      = palm faces away from the body midline. E.g. spreading apart.\n"
+    "\n"
     "RULES:\n"
     "- 'use_hand' MUST be exactly one of: 'left', 'right', 'both', or 'none'.\n"
     "- If the sentence does not require a gesture (e.g., short transition words, simple factual statements), output 'none' for use_hand.\n"
     "- SUBTLETY RULE: Keep gestures low and restrained (waist to lower-chest height). Do NOT describe hands going to shoulder or head height unless the sentence explicitly demands extreme excitement, pointing high, or a specific tall pose.\n"
     "- If the gesture is unilateral (e.g., waving), default to 'right' unless the text implies left.\n"
-    "- 'description' MUST clearly describe the physical motion and final pose of the arms and hands in natural language. Be descriptive enough that an animator could easily visualize it (e.g., mention general height, arm extension, palm direction and finger direction (perpendicular to palms)).\n"
+    "- 'description' MUST clearly describe the physical motion and final pose in natural language. If you mention a palm direction, use the exact terms from the reference above.\n"
     "- TEMPORAL SEQUENCES: If the sentence implies sequential actions (e.g., 'On one hand... but on the other...'), explicitly describe the timing (e.g., 'First, the right hand... Then, halfway through, the left hand...').\n"
     "\n"
     "Example Output 1 (Static Target):\n"
     "```json\n"
-    '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its right arm, bending the elbow to bring the hand to chest height with the palm facing forward in a halting motion.", "duration": 1.6}\n'
+    '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its right arm, bending the elbow to bring the hand to chest height with palms forward in a halting motion.", "duration": 1.6}\n'
     "```\n"
     "Example Output 2 (No Gesture):\n"
     "```json\n"
@@ -50,11 +58,11 @@ LLM1_PROMPT = (
     "```\n"
     "Example Output 3 (Static Target):\n"
     "```json\n"
-    '{"text": "Welcome to this demonstration.", "use_hand": "both", "description": "The robot holds both arms down near its waist, bending the elbows slightly to extend the hands forward and outward with palms facing up.", "duration": 2.5}\n'
+    '{"text": "Welcome to this demonstration.", "use_hand": "both", "description": "The robot holds both arms down near its waist, bending the elbows slightly to extend the hands forward and outward with palms up.", "duration": 2.5}\n'
     "```\n"
     "Example Output 4 (Sequential Action):\n"
     "```json\n"
-    '{"text": "On one hand it is expensive, but on the other it saves time.", "use_hand": "both", "description": "First, the right hand is raised to waist level with the palm up. Then, halfway through the sentence, the left hand is raised to match it, both palms facing up.", "duration": 4.2}\n'
+    '{"text": "On one hand it is expensive, but on the other it saves time.", "use_hand": "both", "description": "First, the right hand is raised to waist level with palms up. Then, halfway through the sentence, the left hand is raised to match it, both palms up.", "duration": 4.2}\n'
     "```"
 )
 
@@ -80,7 +88,13 @@ LLM2_PROMPT = (
     "- X (Forward/Back): 0.0 is the lower torso. 1.0 is maximum reach forward.\n"
     "- Y (Left/Right): 0.0 is the center of the lower torso. +/- 1.0 is maximum reach outward. Left hand uses positive Y, Right hand uses negative Y.\n"
     "- Z (Up/Down): -1.0 is resting at the waist. 0.0 is the center of the lower torso. 1.0 is the height of the face/head.\n"
-    "- Orientations: MUST be one of ['palms_up', 'palms_down', 'palms_in', 'palms_out', 'palms_forward', 'palms_backward'].\n"
+    "- Orientations: MUST be one of the following (flat of palm faces the stated direction):\n"
+    "    'palms_forward'  = palm faces away from robot chest (toward audience).\n"
+    "    'palms_backward' = palm faces toward robot's own chest.\n"
+    "    'palms_up'       = palm faces ceiling.\n"
+    "    'palms_down'     = palm faces floor.\n"
+    "    'palms_in'       = palm faces body midline (palms face each other).\n"
+    "    'palms_out'      = palm faces away from body midline.\n"
     "- Fingers: MUST be one of ['forward', 'backward', 'up', 'down', 'left', 'right'].\n"
     "\n"
     "PHYSICAL ARM LIMITS:\n"
