@@ -83,9 +83,10 @@ def prompt_user_for_anchors(hand_name):
     print(f"\n{'='*60}")
     print(f"VISUAL INSPECTION: {hand_name.upper()}")
     print(f"{'='*60}")
-    boh = input("1. Which way does the BACK OF THE HAND point? (e.g., +Y, -Z): ").strip().upper()
-    thumb = input("2. Which way does the THUMB point? (e.g., -X, +Z): ").strip().upper()
-    return {"t_boh": boh, "t_thumb": thumb}
+    fingers = input("1. Which way do the FINGERS point? (e.g., +X, -Y): ").strip().upper()
+    boh = input("2. Which way does the BACK OF THE HAND point? (e.g., +Y, -Z): ").strip().upper()
+    thumb = input("3. Which way does the THUMB point? (e.g., -X, +Z): ").strip().upper()
+    return {"t_fingers": fingers, "t_boh": boh, "t_thumb": thumb}
 
 def generate_safe_mapping(data, body_name, user_anatomy, indent="    "):
     try:
@@ -100,37 +101,40 @@ def generate_safe_mapping(data, body_name, user_anatomy, indent="    "):
     }
 
     generated_code = []
-    mapped_cols = []
     
     for col_name, math_axis in math_cols.items():
+        matched = False
         for target_name, user_axis in user_anatomy.items():
+            # If the URDF exactly matches the biological part
             if math_axis == user_axis:
                 generated_code.append(f"{indent}{col_name} = {target_name}")
-                mapped_cols.append(col_name)
+                matched = True
                 break
+            # If the URDF axis is the exact opposite (e.g., pointing to the Pinky instead of Thumb)
             elif math_axis == invert_axis(user_axis):
                 generated_code.append(f"{indent}{col_name} = -{target_name}")
-                mapped_cols.append(col_name)
+                matched = True
                 break
-
-    all_cols = ["col_x", "col_y", "col_z"]
-    unmapped_col = [c for c in all_cols if c not in mapped_cols]
-    
-    if len(unmapped_col) == 1:
-        normal_col = unmapped_col[0]
-        generated_code.append(f"\n{indent}# Dynamic Normal (Absorbs L/R mirroring)")
-        generated_code.append(f"{indent}{normal_col} = np.cross({mapped_cols[0]}, {mapped_cols[1]})")
-        generated_code.append(f"{indent}normal_col_name = '{normal_col}'") 
-    else:
-        return f"{indent}# [ERROR] Could not uniquely map the anchors."
+                
+        if not matched:
+            generated_code.append(f"{indent}# [ERROR] Could not map {col_name} (points to {math_axis}). Check inputs.")
 
     return "\n".join(generated_code)
 
-def run_integrated_wizard(left_hand_link, right_hand_link, urdf_path=None, package_path=None):
+def run_integrated_wizard(left_hand_link, right_hand_link, urdf_path=None, package_path=None, mjcf_path=None):
     model = None
     data = None
 
-    if urdf_path is not None:
+    if mjcf_path is not None:
+        print(f"Loading MJCF from: {mjcf_path}")
+        try:
+            model = mujoco.MjModel.from_xml_path(mjcf_path)
+            data = mujoco.MjData(model)
+        except Exception as e:
+            print(f"Failed to load MJCF: {e}")
+            return
+
+    elif urdf_path is not None:
         print(f"Loading simulator from: {urdf_path}")
         try:
             with open(urdf_path, "r") as f:
@@ -212,15 +216,8 @@ def get_robot_orientation(orientation_string, finger_string, is_left):
     else:
 {right_code}
 
-    # 3. MATRIX BUILD & ANTI-REFLECTION CHECK
+    # 3. MATRIX BUILD
     rotation_matrix = np.column_stack((col_x, col_y, col_z))
-    
-    if np.linalg.det(rotation_matrix) < 0:
-        if normal_col_name == 'col_x': col_x = -col_x
-        elif normal_col_name == 'col_y': col_y = -col_y
-        elif normal_col_name == 'col_z': col_z = -col_z
-        rotation_matrix = np.column_stack((col_x, col_y, col_z))
-        
     return rotation_matrix
 """
         print(full_function)
@@ -229,6 +226,7 @@ def get_robot_orientation(orientation_string, finger_string, is_left):
     if model is not None:
         with mujoco.viewer.launch_passive(model, data) as viewer:
             viewer.opt.frame = mujoco.mjtFrame.mjFRAME_BODY
+            viewer.cam.azimuth = 180
             viewer.sync()
             _run_prompts_and_print()
             while viewer.is_running():
@@ -238,12 +236,17 @@ def get_robot_orientation(orientation_string, finger_string, is_left):
         _run_prompts_and_print()
 
 if __name__ == "__main__":
-    # --- USER CONFIGURATION ---
-    from robot_descriptions import pepper_description as desc
-    URDF_PATH = desc.URDF_PATH      # Set to None for a physical robot or different simulator
-    PACKAGE_PATH = desc.PACKAGE_PATH  # Set to None for a physical robot or different simulator
-    LEFT_HAND_LINK = "l_wrist"
-    RIGHT_HAND_LINK = "r_wrist"
-    # --------------------------
+    # --- USER CONFIGURATION Examples ---
+    # from robot_descriptions import pepper_description as desc
+    # URDF_PATH = desc.URDF_PATH      # Set to None for a physical robot or different simulator
+    # PACKAGE_PATH = desc.PACKAGE_PATH  # Set to None for a physical robot or different simulator
+    # LEFT_HAND_LINK = "l_wrist"
+    # RIGHT_HAND_LINK = "r_wrist"
 
-    run_integrated_wizard(LEFT_HAND_LINK, RIGHT_HAND_LINK, URDF_PATH, PACKAGE_PATH)
+    from robot_descriptions import ergocub_description as desc
+    URDF_PATH = desc.URDF_PATH
+    PACKAGE_PATH = desc.PACKAGE_PATH
+    LEFT_HAND_LINK = "l_hand_palm"
+    RIGHT_HAND_LINK = "r_hand_palm"
+
+    run_integrated_wizard(LEFT_HAND_LINK, RIGHT_HAND_LINK, urdf_path=URDF_PATH, package_path=PACKAGE_PATH)

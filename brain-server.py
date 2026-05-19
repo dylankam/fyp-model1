@@ -157,6 +157,8 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
         pkg_dirs = profile.get("package_dirs", [])
         # Fetch axis inversion multipliers; default to identity (no inversion)
         axis_inv = profile.get("axis_inversion", {"x": 1.0, "y": 1.0, "z": 1.0})
+        if "urdf_path" not in profile:
+            raise ValueError(f"Robot '{active_robot}' has no urdf_path — cannot run PINK IK.")
         robot = pin.RobotWrapper.BuildFromURDF(profile["urdf_path"], package_dirs=pkg_dirs)
         q_initial = robot.q0.copy()
 
