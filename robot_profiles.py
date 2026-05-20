@@ -194,8 +194,8 @@ ROBOT_PROFILES = {
             "shoulder_pitch_max": -1.5 
         },
         "scale": {
-            "x_max": 0.25,   
-            "y_max": 0.25,   
+            "x_max": 0.20,   
+            "y_max": 0.20,   
             "z_head": 0.25,  
             "z_waist": -0.05 
         },

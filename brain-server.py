@@ -13,11 +13,14 @@ import pink
 from pink import solve_ik
 from pink.tasks import FrameTask, PostureTask
 import time
+import requests
+import ast
 from robot_profiles import ROBOT_PROFILES
 
 # --- CONFIGURATION ---
 PORT = 65432
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+COLAB_NGROK_URL = "https://cortex-thermal-lurk.ngrok-free.dev/generate_gesture"
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 print("Gemini Client Initialized:", "Yes" if client else "No")
@@ -144,6 +147,36 @@ def call_llm(prompt_instruction, input_data):
         )
     )
     return extract_json(response.text)
+
+def call_llm_finetuned(input_data):
+    """
+    Pings the Google Colab Ngrok tunnel running your fine-tuned Llama-3 model.
+    Expects input_data to be a dictionary (the intent output from LLM1).
+    """
+    endpoint = COLAB_NGROK_URL
+    print("Routing LLM2 to Fine-Tuned Colab Model...")
+    
+    try:
+        # Send the LLM1 intent to your custom model
+        response = requests.post(endpoint, json=input_data, timeout=45)
+        response.raise_for_status()
+        
+        # Extract the stringified JSON payload from the response
+        print("Raw response from Colab:", response.text)
+        result = response.json()
+        raw_payload_string = result.get("gesture_payload", "{}")
+        
+        # Convert it back into a real Python dictionary
+        gesture_dict = ast.literal_eval(raw_payload_string)
+        print("Parsed gesture dictionary from Colab:", gesture_dict)
+        return gesture_dict
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Network Error connecting to Colab: {e}")
+        return {"keyframes": [], "duration": input_data.get("duration", 1.0)}
+    except json.JSONDecodeError as e:
+        print(f"Error parsing the JSON from Colab: {e}")
+        return {"keyframes": [], "duration": input_data.get("duration", 1.0)}
 
 def generate_tts_and_duration(sentence, index):
     filename = f"temp_{index}.mp3"
@@ -354,7 +387,7 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
         print(f"PINK IK Error: {e}")
         return None
 
-def process_paragraph(paragraph, current_angles=None, active_robot="nao"):
+def process_paragraph(paragraph, current_angles=None, active_robot="nao", use_finetuned_llm2=False):
     sentences = re.split(r'(?<=[.!?]) +', paragraph)
     payload = []
     
@@ -368,6 +401,7 @@ def process_paragraph(paragraph, current_angles=None, active_robot="nao"):
         print(f"\nProcessing: {sentence}")
         audio_b64, duration = generate_tts_and_duration(sentence, i)
         
+        # LLM 1 (Intent) ALWAYS uses the baseline reasoning model
         intent_json = call_llm(LLM1_PROMPT, f"Sentence: {sentence}, Duration: {duration}")
         print(f"LLM 1 Intent: {intent_json}")
         time.sleep(0.1) 
@@ -379,7 +413,11 @@ def process_paragraph(paragraph, current_angles=None, active_robot="nao"):
             print("No active gesture needed. Triggering Auto-Rest.")
             cartesian_json = {"keyframes": [], "duration": duration}
         else:
-            cartesian_json = call_llm(LLM2_PROMPT, intent_json)
+            if use_finetuned_llm2:
+                cartesian_json = call_llm_finetuned(intent_json)
+            else:
+                cartesian_json = call_llm(LLM2_PROMPT, intent_json)
+            # --------------------------
             print(f"LLM 2 Cartesian: {cartesian_json}")
         
         # Generate the trajectory using the running state, not the start state
@@ -417,7 +455,8 @@ def process_route():
     print(f"\n[REQUEST] Robot: {active_robot} | Text: {text}")
     print(f"Received physical state for {len(current_angles)} joints.")
 
-    final_payload = process_paragraph(text, current_angles, active_robot)
+    use_finetuned_llm = False
+    final_payload = process_paragraph(text, current_angles, active_robot, use_finetuned_llm)
     return jsonify(final_payload)
 
 if __name__ == "__main__":
