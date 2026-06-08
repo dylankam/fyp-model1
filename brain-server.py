@@ -7,6 +7,7 @@ from gtts import gTTS
 from mutagen.mp3 import MP3
 import google.genai as genai
 from google.genai import types
+from openai import OpenAI
 import numpy as np
 import pinocchio as pin
 import pink
@@ -20,10 +21,14 @@ from robot_profiles import ROBOT_PROFILES
 # --- CONFIGURATION ---
 PORT = 65432
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 COLAB_NGROK_URL = "https://cortex-thermal-lurk.ngrok-free.dev/generate_gesture"
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
 print("Gemini Client Initialized:", "Yes" if client else "No")
+print("OpenAI Client Initialized:", "Yes" if openai_client else "No")
 
 app = Flask(__name__)
 
@@ -130,16 +135,32 @@ LLM2_PROMPT = (
 )
 
 def extract_json(text_response):
+    # Try fenced ```json block first
+    if "```json" in text_response:
+        try:
+            start = text_response.find("```json") + 7
+            end = text_response.find("```", start)
+            return json.loads(text_response[start:end].strip())
+        except Exception:
+            pass
+    # Fall back to extracting the first {...} or [...] block
     try:
-        start = text_response.find("```json") + 7
-        end = text_response.find("```", start)
+        brace = text_response.find("{")
+        bracket = text_response.find("[")
+        if brace == -1 and bracket == -1:
+            return None
+        if brace == -1 or (bracket != -1 and bracket < brace):
+            start, end_char = bracket, "]"
+        else:
+            start, end_char = brace, "}"
+        end = text_response.rfind(end_char) + 1
         return json.loads(text_response[start:end].strip())
-    except:
+    except Exception:
         return None
 
 def call_llm(prompt_instruction, input_data):
     response = client.models.generate_content(
-        model="gemini-3.1-flash-lite-preview",
+        model="gemini-3.1-flash-lite",
         contents=str(input_data),
         config=types.GenerateContentConfig(
             system_instruction=prompt_instruction,
@@ -147,6 +168,18 @@ def call_llm(prompt_instruction, input_data):
         )
     )
     return extract_json(response.text)
+
+def call_llm_openai(prompt_instruction, input_data):
+    """Calls OpenAI API with GPT-5.5 Pro for maximum reasoning depth on the Cartesian JSON mapping."""
+    response = openai_client.responses.create(
+        # Best model for precise reasoning as of mid-2026
+        model="gpt-5.4-mini", 
+        input=[
+            {"role": "system", "content": prompt_instruction},
+            {"role": "user", "content": str(input_data)}
+        ], 
+    )
+    return extract_json(response.output_text)
 
 def call_llm_finetuned(input_data):
     """
@@ -162,8 +195,8 @@ def call_llm_finetuned(input_data):
         response.raise_for_status()
         
         # Extract the stringified JSON payload from the response
-        print("Raw response from Colab:", response.text)
         result = response.json()
+        print("Received response from Colab:", result)
         raw_payload_string = result.get("gesture_payload", "{}")
         
         # Convert it back into a real Python dictionary
@@ -387,7 +420,8 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
         print(f"PINK IK Error: {e}")
         return None
 
-def process_paragraph(paragraph, current_angles=None, active_robot="nao", use_finetuned_llm2=False):
+def process_paragraph(paragraph, current_angles=None, active_robot="nao", llm2_provider="gemini"):
+    # llm2_provider options: "gemini", "openai", "finetuned"
     sentences = re.split(r'(?<=[.!?]) +', paragraph)
     payload = []
     
@@ -412,12 +446,15 @@ def process_paragraph(paragraph, current_angles=None, active_robot="nao", use_fi
         if use_hand == "none":
             print("No active gesture needed. Triggering Auto-Rest.")
             cartesian_json = {"keyframes": [], "duration": duration}
+        
         else:
-            if use_finetuned_llm2:
+            print(f"llm2_provider:  {llm2_provider}")
+            if llm2_provider == "finetuned":
                 cartesian_json = call_llm_finetuned(intent_json)
-            else:
+            elif llm2_provider == "openai":
+                cartesian_json = call_llm_openai(LLM2_PROMPT, intent_json)
+            else:  # default: "gemini"
                 cartesian_json = call_llm(LLM2_PROMPT, intent_json)
-            # --------------------------
             print(f"LLM 2 Cartesian: {cartesian_json}")
         
         # Generate the trajectory using the running state, not the start state
@@ -455,8 +492,9 @@ def process_route():
     print(f"\n[REQUEST] Robot: {active_robot} | Text: {text}")
     print(f"Received physical state for {len(current_angles)} joints.")
 
-    use_finetuned_llm = False
-    final_payload = process_paragraph(text, current_angles, active_robot, use_finetuned_llm)
+    # Choose LLM2 provider: "gemini", "openai", or "finetuned"
+    LLM2_PROVIDER = "gemini"
+    final_payload = process_paragraph(text, current_angles, active_robot, LLM2_PROVIDER)
     return jsonify(final_payload)
 
 if __name__ == "__main__":

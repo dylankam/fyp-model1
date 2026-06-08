@@ -10,7 +10,7 @@ import pygame
 # --- CONFIGURATION ---
 SERVER_URL = 'http://127.0.0.1:65432/process'  # Change IP to the Brain Server machine if remote
 ROBOT_IP = "127.0.0.1"  # Change to physical robot IP if not using simulator
-ROBOT_PORT = 60031
+ROBOT_PORT = 57693
 
 def connect_to_server(motion, text):
     try:
@@ -20,12 +20,15 @@ def connect_to_server(motion, text):
         current_state_dict = dict(zip(joint_names, joint_angles))
 
         # 2. SEND via HTTP POST
+        t_start = time.time()
         response = requests.post(SERVER_URL, json={
             "text": text,
-            "robot": "nao",
+            "robot": "pepper",
             "angles": current_state_dict
         }, timeout=300)
         response.raise_for_status()
+        elapsed = time.time() - t_start
+        print("Request round-trip time: {:.2f}s".format(elapsed))
         return response.json()
     except Exception as e:
         print("Request Error:", e)
