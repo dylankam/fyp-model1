@@ -48,17 +48,24 @@ LLM1_PROMPT = (
     "- 'palms in'       = palm faces the body midline (palms face each other). E.g. neutral rest.\n"
     "- 'palms out'      = palm faces away from the body midline. E.g. spreading apart.\n"
     "\n"
+    "HEIGHT REFERENCE (always describe the intended final height of the hand using one of these terms):\n"
+    "- 'waist height'   = hands at the robot's waist, approximately its lowest natural position.\n"
+    "- 'chest height'   = hands at mid-torso level, a natural conversational gesture range.\n"
+    "- 'shoulder height'= hands raised to the top of the torso, used for emphasis or wide gestures.\n"
+    "- 'above the head' = hands raised fully above the robot's head, used only for extreme upward motion.\n"
+    "\n"
     "RULES:\n"
     "- 'use_hand' MUST be exactly one of: 'left', 'right', 'both', or 'none'.\n"
     "- If the sentence does not require a gesture (e.g., short transition words, simple factual statements), output 'none' for use_hand.\n"
-    "- SUBTLETY RULE: Keep gestures low and restrained (waist to lower-chest height). Do NOT describe hands going to shoulder or head height unless the sentence explicitly demands extreme excitement, pointing high, or a specific tall pose.\n"
+    "- HEIGHT RULE: Default to waist-to-chest height for calm, conversational gestures. Use shoulder height for emphasis or wide gestures. Use above-the-head ONLY when the sentence explicitly describes upward motion, pointing high, or extreme excitement. Always include the intended height in the description using the height reference terms above.\n"
+    "- TRAJECTORY RULE: If the gesture involves motion across a vertical range (e.g., climbing, rising, falling), explicitly state the START height and END height in the description so the motion is fully defined.\n"
     "- If the gesture is unilateral (e.g., waving), default to 'right' unless the text implies left.\n"
-    "- 'description' MUST clearly describe the physical motion and final pose in natural language. If you mention a palm direction, use the exact terms from the reference above.\n"
+    "- 'description' MUST clearly describe the physical motion and final pose in natural language. Always include height using the reference terms. If you mention a palm direction, use the exact terms from the reference above.\n"
     "- TEMPORAL SEQUENCES: If the sentence implies sequential actions (e.g., 'On one hand... but on the other...'), explicitly describe the timing (e.g., 'First, the right hand... Then, halfway through, the left hand...').\n"
     "\n"
     "Example Output 1 (Static Target):\n"
     "```json\n"
-    '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its right arm, bending the elbow to bring the hand to chest height with palms forward in a halting motion.", "duration": 1.6}\n'
+    '{"text": "Stop right there!", "use_hand": "right", "description": "The robot raises its right arm from waist height to chest height, with palms forward in a halting motion, finishing at chest height.", "duration": 1.6}\n'
     "```\n"
     "Example Output 2 (No Gesture):\n"
     "```json\n"
@@ -66,11 +73,15 @@ LLM1_PROMPT = (
     "```\n"
     "Example Output 3 (Static Target):\n"
     "```json\n"
-    '{"text": "Welcome to this demonstration.", "use_hand": "both", "description": "The robot holds both arms down near its waist, bending the elbows slightly to extend the hands forward and outward with palms up.", "duration": 2.5}\n'
+    '{"text": "Welcome to this demonstration.", "use_hand": "both", "description": "The robot holds both arms at waist height, bending the elbows slightly to extend the hands forward and outward with palms up.", "duration": 2.5}\n'
     "```\n"
     "Example Output 4 (Sequential Action):\n"
     "```json\n"
-    '{"text": "On one hand it is expensive, but on the other it saves time.", "use_hand": "both", "description": "First, the right hand is raised to waist level with palms up. Then, halfway through the sentence, the left hand is raised to match it, both palms up.", "duration": 4.2}\n'
+    '{"text": "On one hand it is expensive, but on the other it saves time.", "use_hand": "both", "description": "First, the right hand is raised from waist height to chest height with palms up. Then, halfway through the sentence, the left hand is raised from waist height to chest height to match it, both palms up.", "duration": 4.2}\n'
+    "```\n"
+    "Example Output 5 (Vertical trajectory):\n"
+    "```json\n"
+    '{"text": "The rocket soared up into the sky.", "use_hand": "right", "description": "The robot sweeps its right hand upward from waist height, rising through chest height and shoulder height, finishing with the hand raised above the head, with palms in.", "duration": 2.8}\n'
     "```"
 )
 
