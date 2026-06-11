@@ -16,7 +16,11 @@ from pink.tasks import FrameTask, PostureTask
 import time
 import requests
 import ast
+from dotenv import load_dotenv
 from robot_profiles import ROBOT_PROFILES
+
+# Load API keys from .env in the repo root
+load_dotenv()
 
 # --- CONFIGURATION ---
 PORT = 65432
@@ -146,6 +150,17 @@ LLM2_PROMPT = (
 )
 
 def extract_json(text_response):
+    """Extract the first JSON object or array from a text response.
+
+    Tries to parse a fenced ```json block first, then falls back to
+    finding the outermost ``{...}`` or ``[...]`` block in the text.
+
+    Args:
+        text_response (str): Raw text that may contain a JSON payload.
+
+    Returns:
+        dict | list | None: Parsed JSON data, or None if extraction fails.
+    """
     # Try fenced ```json block first
     if "```json" in text_response:
         try:
@@ -170,6 +185,15 @@ def extract_json(text_response):
         return None
 
 def call_llm(prompt_instruction, input_data):
+    """Call the Gemini model with a system prompt and input data.
+
+    Args:
+        prompt_instruction (str): The system instruction for the model.
+        input_data: The user input to pass to the model (stringified).
+
+    Returns:
+        dict | list | None: Parsed JSON from the model response, or None.
+    """
     response = client.models.generate_content(
         model="gemini-3.1-flash-lite",
         contents=str(input_data),
@@ -223,6 +247,18 @@ def call_llm_finetuned(input_data):
         return {"keyframes": [], "duration": input_data.get("duration", 1.0)}
 
 def generate_tts_and_duration(sentence, index):
+    """Generate TTS audio, encode it as base64, and return its duration.
+
+    Creates a temporary MP3 via gTTS, measures its duration with mutagen,
+    encodes the bytes as base64, then deletes the temporary file.
+
+    Args:
+        sentence (str): The text to synthesise.
+        index (int): A unique index used to name the temporary file.
+
+    Returns:
+        tuple[str, float]: Base64-encoded audio string and duration in seconds.
+    """
     filename = f"temp_{index}.mp3"
     tts = gTTS(text=sentence, lang='en')
     tts.save(filename)
@@ -239,6 +275,25 @@ def generate_tts_and_duration(sentence, index):
 
 
 def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", current_angles=None, dt=0.04):
+    """Run a PINK inverse-kinematics simulation to produce a joint trajectory.
+
+    Loads the named robot profile, seeds the configuration from *current_angles*,
+    interpolates Cartesian waypoints from *cartesian_target*, solves IK at each
+    time step, and applies a smoothing pass to the resulting angle sequences.
+
+    Args:
+        cartesian_target (dict | None): Keyframe payload from LLM2, containing a
+            ``keyframes`` list and optional ``duration``.
+        duration (float): Total animation duration in seconds.
+        active_robot (str): Key into ``ROBOT_PROFILES`` (default ``"nao"``).
+        current_angles (dict | None): Mapping of joint name to current angle in
+            radians, used to seed the IK solver.
+        dt (float): Simulation time step in seconds (default ``0.04`` s = 25 Hz).
+
+    Returns:
+        dict | None: ``{"names": [...], "times": [[...], ...], "angles": [[...], ...]}``
+            on success, or ``None`` if an exception occurs.
+    """
     try:
         # 1. Load Robot Profile
         profile = ROBOT_PROFILES.get(active_robot)
@@ -306,7 +361,7 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
                 # Apply the heavy cost to all degrees of freedom for this joint to makes it 100x more "expensive" for the solver to move that joint.
                 cost_vector[idx_v : idx_v + nv_joint] = 1.0 
                 
-        # 3. Feed the custom cost array into the task
+        # 5b. Feed the custom cost array into the posture task
         posture_task = PostureTask(cost=cost_vector)
         posture_task.set_target(q_initial)
         tasks.append(posture_task)
@@ -379,6 +434,16 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
             r_waypoints.append((1.0, pin.SE3(REST_R_RIGHT, REST_R_POS)))
 
         def get_interpolated_se3(progress, waypoints):
+            """Interpolate between SE3 waypoints for a normalised progress value.
+
+            Args:
+                progress (float): Current animation progress in [0, 1].
+                waypoints (list[tuple[float, pin.SE3]]): Sorted list of
+                    ``(time_fraction, SE3)`` pairs.
+
+            Returns:
+                pin.SE3: Interpolated pose at the given progress.
+            """
             if progress <= waypoints[0][0]: return waypoints[0][1]
             if progress >= waypoints[-1][0]: return waypoints[-1][1]
             for i in range(len(waypoints) - 1):
@@ -432,6 +497,29 @@ def generate_pink_trajectory(cartesian_target, duration, active_robot="nao", cur
         return None
 
 def process_paragraph(paragraph, current_angles=None, active_robot="nao", llm2_provider="gemini"):
+    """Split a paragraph into sentences and generate an animated payload for each.
+
+    For each sentence the function:
+    1. Generates TTS audio and measures its duration.
+    2. Calls LLM1 to derive a gesture intent.
+    3. Calls LLM2 (via the chosen provider) to map the intent to Cartesian
+       keyframes, unless the intent is ``"none"``.
+    4. Runs PINK IK to produce joint angle trajectories.
+    5. Updates running joint angles so each sentence begins from the physical
+       state left by the previous one.
+
+    Args:
+        paragraph (str): Free-form text to animate.
+        current_angles (dict | None): Seed joint angles from the robot's current
+            physical state.
+        active_robot (str): Key into ``ROBOT_PROFILES`` (default ``"nao"``).
+        llm2_provider (str): Which LLM2 backend to use — ``"gemini"``,
+            ``"openai"``, or ``"finetuned"`` (default ``"gemini"``).
+
+    Returns:
+        list[dict]: One entry per sentence, each containing ``sentence``,
+            ``audio_b64``, and ``trajectory`` keys.
+    """
     # llm2_provider options: "gemini", "openai", "finetuned"
     sentences = re.split(r'(?<=[.!?]) +', paragraph)
     payload = []
@@ -489,6 +577,18 @@ def process_paragraph(paragraph, current_angles=None, active_robot="nao", llm2_p
 
 @app.route('/process', methods=['POST'])
 def process_route():
+    """Flask endpoint — process a paragraph and return animated trajectories.
+
+    Expects a JSON body with:
+
+    - ``text`` (str): The paragraph to animate.
+    - ``robot`` (str, optional): Robot profile key (default ``"nao"``).
+    - ``angles`` (dict, optional): Current joint angles to seed the IK solver.
+
+    Returns:
+        Response: JSON array of per-sentence payloads, or an error object with
+            HTTP 400 if the request is malformed or missing required fields.
+    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON body received"}), 400

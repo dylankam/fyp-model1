@@ -5,12 +5,31 @@ import numpy as np
 import time
 
 def get_dominant_axis(vector):
+    """Return the dominant signed axis label for a 3-element vector.
+
+    Finds the component with the largest absolute value and returns a
+    string such as ``'+X'``, ``'-Y'``, or ``'+Z'``.
+
+    Args:
+        vector (array-like): A 3-element numeric vector.
+
+    Returns:
+        str: Signed axis label, e.g. ``'+X'`` or ``'-Z'``.
+    """
     axes = ["X", "Y", "Z"]
     max_idx = np.argmax(np.abs(vector))
     sign = "+" if vector[max_idx] > 0 else "-"
     return f"{sign}{axes[max_idx]}"
 
 def invert_axis(axis_str):
+    """Flip the sign of a signed axis string.
+
+    Args:
+        axis_str (str): A signed axis label such as ``'+X'`` or ``'-Z'``.
+
+    Returns:
+        str: The inverted axis label, e.g. ``'+X'`` becomes ``'-X'``.
+    """
     return axis_str.replace('+', 'TEMP').replace('-', '+').replace('TEMP', '-')
 
 def string_to_array(axis_str):
@@ -80,6 +99,19 @@ def prompt_global_environment():
     return dict_code
 
 def prompt_user_for_anchors(hand_name):
+    """Interactively prompt the user to describe the physical orientation of a hand.
+
+    Instructs the user to look at the robot in the simulator or physically
+    and enter which world axis each anatomical direction (fingers, back of
+    hand, thumb) currently points toward.
+
+    Args:
+        hand_name (str): A descriptive label for the hand (e.g. ``'LEFT HAND'``).
+
+    Returns:
+        dict: With keys ``'t_fingers'``, ``'t_boh'``, and ``'t_thumb'``,
+            each containing a signed axis string such as ``'+X'``.
+    """
     print(f"\n{'='*60}")
     print(f"VISUAL INSPECTION: {hand_name.upper()}")
     print(f"{'='*60}")
@@ -89,6 +121,24 @@ def prompt_user_for_anchors(hand_name):
     return {"t_fingers": fingers, "t_boh": boh, "t_thumb": thumb}
 
 def generate_safe_mapping(data, body_name, user_anatomy, indent="    "):
+    """Generate Python column-mapping code for a URDF body's rotation matrix.
+
+    Reads the current world-frame rotation matrix of *body_name* from
+    MuJoCo, identifies which world axis each column points along, and
+    cross-references it against the user-supplied anatomical directions to
+    produce ready-to-paste ``col_x / col_y / col_z`` assignment code.
+
+    Args:
+        data (mujoco.MjData): Live MuJoCo data object (robot at rest pose).
+        body_name (str): Name of the MuJoCo body to inspect (e.g. ``'l_wrist'``).
+        user_anatomy (dict): Mapping of anatomical direction name to signed axis
+            string, e.g. ``{'t_fingers': '+X', 't_boh': '+Z', 't_thumb': '-Y'}``.
+        indent (str): Indentation prefix for the generated lines (default 4 spaces).
+
+    Returns:
+        str: Multi-line Python code fragment assigning ``col_x``, ``col_y``,
+            and ``col_z``, or an error comment if the body was not found.
+    """
     try:
         xmat = data.body(body_name).xmat.reshape(3, 3)
     except Exception:
@@ -122,6 +172,28 @@ def generate_safe_mapping(data, body_name, user_anatomy, indent="    "):
     return "\n".join(generated_code)
 
 def run_integrated_wizard(left_hand_link, right_hand_link, urdf_path=None, package_path=None, mjcf_path=None):
+    """Run the full interactive calibration wizard for a robot's hand orientation.
+
+    Loads a robot model from either a MJCF or URDF file, optionally opens a
+    MuJoCo passive viewer, and walks the user through:
+
+    1. Global environment calibration (which world axis is Up/Forward).
+    2. Visual inspection of each hand's anatomical axes.
+    3. Auto-generation of a ``get_robot_orientation`` function body to paste
+       into ``robot_profiles.py``.
+
+    Args:
+        left_hand_link (str): Name of the left-hand body in the model
+            (e.g. ``'l_wrist'``).
+        right_hand_link (str): Name of the right-hand body in the model
+            (e.g. ``'r_wrist'``).
+        urdf_path (str | None): Path to the robot URDF file. Mutually
+            exclusive with *mjcf_path*.
+        package_path (str | None): Filesystem path used to resolve
+            ``package://`` URIs inside the URDF.
+        mjcf_path (str | None): Path to a MuJoCo MJCF XML file. Takes
+            priority over *urdf_path* when both are supplied.
+    """
     model = None
     data = None
 

@@ -24,6 +24,22 @@ profile = ROBOT_PROFILES[ROBOT_NAME]
 # 1. LOAD MODEL (MJCF or URDF)
 # ==========================================
 def load_model(profile):
+    """Load a MuJoCo model from a robot profile dict.
+
+    Supports both MJCF (``.xml``) and URDF sources.  For URDFs, resolves
+    ``package://`` URIs using the ``package_dirs`` entry in *profile*, injects
+    a ``<compiler balanceinertia="true"/>`` element, and retries without visual
+    meshes if the first load attempt fails (e.g. unsupported ``.dae`` files).
+
+    Args:
+        profile (dict): A robot profile from ``ROBOT_PROFILES``, expected to
+            contain either a ``'mjcf_path'`` key or a ``'urdf_path'`` key
+            (plus optional ``'package_dirs'``).
+
+    Returns:
+        mujoco.MjModel: Compiled MuJoCo model ready for simulation.
+            Calls ``exit()`` on unrecoverable load failure.
+    """
     if "mjcf_path" in profile:
         print(f"Loading {ROBOT_NAME} from MJCF...")
         model = mujoco.MjModel.from_xml_path(profile["mjcf_path"])

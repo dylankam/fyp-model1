@@ -13,6 +13,20 @@ ROBOT_IP = "127.0.0.1"  # Change to physical robot IP if not using simulator
 ROBOT_PORT = 57693
 
 def connect_to_server(motion, text):
+    """Read the robot's current joint state and POST a generation request to the Brain Server.
+
+    Fetches live joint angles via NAOqi, bundles them with the target text,
+    and sends a JSON POST to ``SERVER_URL``. Returns the parsed JSON payload
+    on success or ``None`` on any error.
+
+    Args:
+        motion (ALProxy): NAOqi ``ALMotion`` proxy used to read joint angles.
+        text (str): The paragraph the robot should speak and animate.
+
+    Returns:
+        list[dict] | None: Parsed Brain Server response (one entry per
+            sentence), or ``None`` if the request fails.
+    """
     try:
         # 1. READ PHYSICAL REALITY
         joint_names = motion.getBodyNames("Body")
@@ -35,9 +49,30 @@ def connect_to_server(motion, text):
         return None
 
 def execute_payload(payload, motion, audio_player, memory, posture):
-    """
-    Executes the payload. Currently toggled for Pygame local audio testing.
-    Retains audio_player argument for instant transition to physical hardware.
+    """Execute a full animated payload on the NAO robot.
+
+    Iterates over each per-sentence item in *payload*, decoding and playing
+    the TTS audio while concurrently running the joint-angle trajectory via
+    NAOqi ``ALMotion.angleInterpolation``.
+
+    Audio is currently played through Pygame for local/virtual testing.
+    Switch to the commented-out ``audio_player.post.playFile`` lines to
+    drive the robot's onboard speaker on physical hardware.
+
+    A 5 % time-dilation factor (``* 1.05``) plus a 350 ms lead-in offset
+    (``+ 0.35``) is applied to all trajectory timestamps to compensate for
+    network and motion-controller latency.
+
+    Args:
+        payload (list[dict]): Brain Server response, one dict per sentence,
+            each containing ``sentence``, ``audio_b64``, and ``trajectory``.
+        motion (ALProxy): NAOqi ``ALMotion`` proxy.
+        audio_player (ALProxy): NAOqi ``ALAudioPlayer`` proxy (reserved for
+            physical hardware; not used in virtual mode).
+        memory (ALProxy): NAOqi ``ALMemory`` proxy, used to raise the
+            speech-bubble event.
+        posture (ALProxy): NAOqi ``ALRobotPosture`` proxy, used to return
+            the robot to a neutral stand after execution.
     """
     for i, item in enumerate(payload):
         pygame.mixer.init()

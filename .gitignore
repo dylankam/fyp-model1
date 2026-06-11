@@ -1,0 +1,57 @@
+# ── Environment & Secrets ──────────────────────────────────────────────────────
+.env
+*.env.local
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+.cache/
+
+# ── Virtual / Conda Environments ───────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Jupyter ────────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── MuJoCo / Simulation Scratch ────────────────────────────────────────────────
+mjcf_cache/
+meshes_cache/
+
+# ── TTS Temp Audio ─────────────────────────────────────────────────────────────
+*.mp3
+temp_*.mp3
+
+# ── Fine-Tune / Model Weights ───────────────────────────────────────────────────
+# Keep finetune/ notebooks but ignore large training artefacts
+finetune/outputs/
+finetune/lora_model/
+finetune/lora_model_backup.zip
+lora_model/
+lora_model_backup.zip
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+
+# ── IDEs ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.code-workspace
+
+# ── OS ─────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
