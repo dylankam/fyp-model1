@@ -1,4 +1,4 @@
-# FYP Model 1 — LLM-Driven Gesture Synthesis for Humanoid Robots
+# Automatic Gesture Creation From Text for Humanoid Robots
 
 A pipeline that converts natural-language speech into synchronised, physically-valid arm gestures for humanoid robots. Text is processed by a two-stage LLM chain; the resulting Cartesian keyframes are solved through a PINK inverse-kinematics solver and streamed to the robot (or a MuJoCo visualiser) in sync with synthesised TTS audio.
 
@@ -45,7 +45,7 @@ Client (nao-client.py / test-client.py / test_in_mujoco.py)
 | OpenAI API key | optional |
 | Google Colab (free tier) | required for fine-tuned LLM2 only |
 
-> **NAO client only:** `nao-client.py` targets the NAOqi SDK, which requires **Python 2.7**. See [NAO Client Setup](#5-nao-client-python-27).
+> **NAO client only:** `nao-client.py` targets the NAOqi SDK, which requires **Python 2.7**. See [NAO Client Setup](http://doc.aldebaran.com/2-8/dev/python/install_guide.html).
 
 ---
 
@@ -109,11 +109,11 @@ If you want to locally run the fine-tuned Llama-3-8B LoRA adapter rather than us
 
 The model runs inside **Google Colab** (free T4 GPU) and is exposed to the local Brain Server via an ngrok tunnel.
 
-### 4.1 Using the pre-trained weights (recommended)
+### 4.1 Using the pre-trained weights
 
 1. Open [`finetune/fyp_finetune.ipynb`](finetune/fyp_finetune.ipynb) in Google Colab.
 2. Navigate to the **"For if you already have Model Weights"** section.
-3. Download `lora_model_backup.zip` from the Hugging Face link above.
+3. Download `lora_model_backup.zip` from the link above.
 4. Upload the zip when prompted by the **"Run This Cell"** cell.
 5. Add your `NGROK_TOKEN` to Colab Secrets (left sidebar → key icon):
    - Get a free token at [ngrok.com](https://ngrok.com)
@@ -132,7 +132,7 @@ The model runs inside **Google Colab** (free T4 GPU) and is exposed to the local
    # Already included in the notebook:
    !zip -r lora_model_backup.zip lora_model
    ```
-4. Upload to Hugging Face or store locally and upload to Colab next time.
+4. Store locally and upload to Colab next time.
 
 > **Base model evaluation only:** [`finetune/fyp_base.ipynb`](finetune/fyp_base.ipynb) runs the unmodified `llama-3-8B-Instruct` model through the same ngrok server — useful for comparing base vs fine-tuned performance without uploading weights.
 
@@ -184,7 +184,7 @@ A MuJoCo viewer opens, you enter text, and the robot animates in sync with the a
 
 #### C — Physical NAO / Pepper robot
 
-See [NAO Client Setup](#5-nao-client-python-27) below.
+See [NAO Client Setup](http://doc.aldebaran.com/2-8/dev/python/install_guide.html) below.
 
 ### 5.3 Switching LLM2 providers
 
@@ -204,7 +204,7 @@ LLM2_PROVIDER = "finetuned"  # Fine-tuned Llama-3 via Colab ngrok tunnel
 
 ### Setup
 
-1. Download the **NAOqi Python 2 SDK** from [Aldebaran Support](https://www.aldebaran.com/en/support/nao-6/downloads-softwares).
+1. Download the **NAOqi Python 2 SDK** from [Aldebaran Support](http://doc.aldebaran.com/2-8/dev/python/install_guide.html).
 2. Add it to your `PYTHONPATH`:
    ```bash
    export PYTHONPATH=/path/to/pynaoqi-sdk/lib/python2.7/site-packages:$PYTHONPATH
